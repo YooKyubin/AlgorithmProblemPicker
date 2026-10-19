@@ -6,7 +6,7 @@ import re
 import time
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
-from playwright.sync_api import Browser, BrowserContext, Error, Page, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Error, JSHandle, Page, sync_playwright
 
 from .models import Candidate, CompletedListing, Known, Problem, Rated, SearchCriteria
 from .models import Status, Unavailable, Unrated, UserReference, now
@@ -48,7 +48,7 @@ _SNAPSHOT = r"""() => {
         /^(더 불러오기|불러오는 중[.\s…]*|로딩 중[.\s…]*)$/.test(b.innerText.trim()));
     return {rows, tableCount: tables.length, next: next.map(a => a.getAttribute('href')),
         more: more.length, moreDisabled: more.some(b => b.disabled),
-        busy: !!document.querySelector('article [aria-busy="true"]') ||
+        busy: !!document.querySelector('article[aria-busy="true"], article [aria-busy="true"]') ||
               /(^|\n)\s*(로딩 중|불러오는 중)[.\s…]*(\n|$)/.test(text),
         empty: /(^|\n)\s*(조건에 맞는 문제가 없어요\.?|검색 결과가 없습니다\.?|문제가 없습니다\.?|결과가 없습니다\.?|조회된 문제가 없습니다\.?)\s*(\n|$)/.test(text),
         errors: texts('[role="alert"]').filter(Boolean), headings: texts('h1'), gates: texts('[role="dialog"]'),
@@ -60,12 +60,34 @@ _SNAPSHOT = r"""() => {
 }"""
 
 
+# Observe only this operation's public result DOM, not application state.
+_USER_UPDATE = """root => {
+    const state = {revision:0};
+    const result = '.jg-find-result, .jg-find-note';
+    const element = node => node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    const observer = new MutationObserver(mutations => {
+        if (mutations.some(m =>
+            m.type === 'attributes' || element(m.target)?.closest(result) ||
+            [...m.addedNodes, ...m.removedNodes].some(node => {
+                const e = element(node);
+                return e && (e.matches(result) || e.querySelector(result));
+            }))) state.revision++;
+    });
+    observer.observe(root, {childList:true, subtree:true, characterData:true,
+                            attributes:true, attributeFilter:['aria-busy']});
+    state.observer = observer;
+    return state;
+}"""
+
+
 class JungolSource:
     def __init__(self, report: Callable[[str], None] = lambda _: None):
         self._report = report
         self._last_start = float('-inf')
         self._http_failure = ""
-        self._pending: set = set()
+        self._pending: dict = {}
+        self._started_requests = 0
+        self._completed_requests = 0
         self._dom_timeout = 15_000
 
     def __enter__(self) -> "JungolSource":
@@ -118,13 +140,15 @@ class JungolSource:
 
     def _request_started(self, request) -> None:
         if self._relevant(request):
-            self._pending.add(request)
+            self._started_requests += 1
+            self._pending[request] = self._started_requests
 
     def _request_finished(self, request) -> None:
-        self._pending.discard(request)
+        sequence = self._pending.pop(request, 0)
+        self._completed_requests = max(self._completed_requests, sequence)
 
     def _request_failed(self, request) -> None:
-        self._pending.discard(request)
+        self._pending.pop(request, None)
         if self._relevant(request):
             self._http_failure = f"페이지 전송 실패: {request.failure}"
 
@@ -158,19 +182,22 @@ class JungolSource:
         if snapshot['errors']:
             raise SourceAccessError("정올 오류: " + "; ".join(snapshot['errors']))
 
-    def _wait_listing(self, previous: set[int] | None = None) -> dict:
+    def _wait_listing(self, previous: set[int] | None = None,
+                      request_checkpoint: int | None = None) -> dict:
         deadline = time.monotonic() + self._dom_timeout / 1000
         last_snapshot = None
         while True:
             snapshot = self._list_page.evaluate(_SNAPSHOT)
             self._check_access(snapshot)
-            if not snapshot['busy'] and not self._pending:
+            if not snapshot['busy'] and not snapshot['moreDisabled'] and not self._pending:
                 ready = snapshot['rows'] and all(row['rates'] and row['regular'] for row in snapshot['rows'])
                 if (ready or snapshot['empty']) and snapshot == last_snapshot:
                     if previous is None:
                         return snapshot
                     ids = {self._candidate(row).id for row in snapshot['rows']}
-                    if ids - previous or (not snapshot['more'] and not snapshot['next']):
+                    # A temporarily removed button does not prove an empty final load.
+                    completed_load = request_checkpoint is not None and self._completed_requests > request_checkpoint
+                    if ids - previous or (completed_load and not snapshot['more'] and not snapshot['next']):
                         return snapshot
             if time.monotonic() >= deadline:
                 error = SourceSchemaError if previous is None else SourceCompletenessError
@@ -221,12 +248,12 @@ class JungolSource:
             page.locator('button').filter(has_text=re.compile(r'^\s*사용자 선택\s*$')).click()
             scope = page.locator('main').filter(has=page.locator('.jg-find-search input')).last
             self._pace()
-            scope.get_by_placeholder('검색', exact=True).fill(handle)
+            state = self._update_user_page(
+                lambda: scope.get_by_placeholder('검색', exact=True).fill(handle), handle)
             matches: list[int] = []
             seen_pages: set[int] = set()
             target_page = 1
             while True:
-                state = self._wait_user_page()
                 current = state['page']
                 if current in seen_pages:
                     raise UserResolutionError("사용자 검색 페이지가 반복됩니다.")
@@ -241,21 +268,21 @@ class JungolSource:
                 if not numbered_next.count() and (not group_next.count() or group_next.is_disabled()):
                     break
                 self._pace()
-                (numbered_next if numbered_next.count() else group_next).click()
-                self._wait_user_page(expected=current+1, previous_handles=state['handles'])
+                button = numbered_next if numbered_next.count() else group_next
+                state = self._update_user_page(button.click, handle, expected=current+1)
             if len(matches) != 1:
                 raise UserResolutionError(f"정확한 사용자 @{handle}: {'없음' if not matches else '식별 모호함'}")
             if current != target_page:
                 self._pace()
-                scope.locator('button').filter(has=page.locator('svg.lucide-chevrons-left')).click()
-                state = self._wait_user_page(expected=1, previous_handles=state['handles'])
+                first = scope.locator('button').filter(has=page.locator('svg.lucide-chevrons-left'))
+                state = self._update_user_page(first.click, handle, expected=1)
                 current = state['page']
             while current < target_page:
                 self._pace()
                 numbered_next = scope.locator('button.page-num').filter(has_text=re.compile(rf'^\s*{current+1}\s*$'))
                 group_next = scope.locator('button').filter(has=page.locator('svg.lucide-chevron-right'))
-                (numbered_next if numbered_next.count() else group_next).click()
-                state = self._wait_user_page(expected=current+1, previous_handles=state['handles'])
+                button = numbered_next if numbered_next.count() else group_next
+                state = self._update_user_page(button.click, handle, expected=current+1)
                 current = state['page']
             self._pace()
             scope.locator('.jg-find-result button').nth(matches[0]).click()
@@ -267,31 +294,56 @@ class JungolSource:
         except Error as error:
             raise UserResolutionError(f"공개 사용자 UI 확인 실패: {error}") from error
 
-    def _wait_user_page(self, expected: int | None = None,
-                        previous_handles: list[str] | None = None) -> dict:
+    def _update_user_page(self, action: Callable[[], None], handle: str,
+                          expected: int | None = None) -> dict:
+        page = self._list_page
+        scope = page.locator('main').filter(has=page.locator('.jg-find-search input')).last
+        update = scope.evaluate_handle(_USER_UPDATE)
+        request_checkpoint = self._started_requests
+        failed = False
+        try:
+            action()
+            return self._wait_user_page(handle, update, request_checkpoint, expected)
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                update.evaluate('state => state.observer.disconnect()')
+                update.dispose()
+            except Error:
+                # Preserve the original failure or Ctrl+C if the driver has gone away.
+                if not failed:
+                    raise
+
+    def _wait_user_page(self, handle: str, update: JSHandle, request_checkpoint: int,
+                        expected: int | None = None) -> dict:
         deadline = time.monotonic() + self._dom_timeout / 1000
         last_state = None
         while True:
-            self._check_access(self._list_page.evaluate(_SNAPSHOT))
+            snapshot = self._list_page.evaluate(_SNAPSHOT)
+            self._check_access(snapshot)
             state = self._list_page.evaluate(r"""() => {
                 const root = document.querySelector('.jg-find-search')?.parentElement;
                 if (!root) return null;
                 const note = root.querySelector('.jg-find-note')?.innerText || '';
-                return {page:Number(root.querySelector('button.page-num.active')?.innerText || 1),
+                return {query:root.querySelector('.jg-find-search input').value,
+                    page:Number(root.querySelector('button.page-num.active')?.innerText || 1),
                     handles:[...root.querySelectorAll('.jg-find-result h3')].map(e=>
                         [...e.childNodes].filter(n=>n.nodeType===Node.TEXT_NODE).map(n=>n.textContent).join('').trim()),
                     empty:/검색 결과가 없습니다|사용자를 찾을 수 없습니다/.test(note),
                     busy:/로딩|검색 중/.test(note)};
             }""")
-            if state and state == last_state and not self._pending and not state['busy'] and (
+            revision = update.evaluate('state => state.revision')
+            changed = revision > 0 or self._completed_requests > request_checkpoint
+            ready = not snapshot['busy'] and not self._pending
+            if state and changed and ready and state == last_state and not state['busy'] and (
                 state['handles'] or state['empty']
-            ) and (expected is None or state['page'] == expected) and (
-                previous_handles is None or state['handles'] != previous_handles
-            ):
+            ) and state['query'] == handle and (expected is None or state['page'] == expected):
                 return state
             if time.monotonic() >= deadline:
                 raise UserResolutionError("사용자 검색 결과를 완전히 확인할 수 없습니다. 공개 검색 화면을 확인하세요.")
-            last_state = state
+            last_state = state if state and changed and ready and not state['busy'] else None
             self._list_page.wait_for_timeout(50)
 
     def collect(self, criteria: SearchCriteria, user: UserReference | None) -> CompletedListing:
@@ -350,8 +402,9 @@ class JungolSource:
                 previous = set(candidates)
                 self._pace()
                 try:
+                    request_checkpoint = self._started_requests
                     self._list_page.get_by_role('button', name='더 불러오기', exact=True).click()
-                    snapshot = self._wait_listing(previous)
+                    snapshot = self._wait_listing(previous, request_checkpoint)
                 except Error as error:
                     raise SourceCompletenessError(f"추가 목록 조회 실패: {error}") from error
             else:
@@ -383,9 +436,7 @@ class JungolSource:
         page = self._detail_page
         self._goto(page, candidate.url)
         try:
-            header = page.locator('article main').filter(has=page.locator('h1')).first
-            header.locator('[title="맞힌 사람"]').wait_for()
-            self._check_access(page.evaluate(_SNAPSHOT))
+            stat = self._wait_detail_stat()
             identity = page.locator('article').first.get_by_role('link', name='문제', exact=True).evaluate_all(
                 "els => els.map(e=>e.getAttribute('href'))")
             tab_urls = [urlsplit(urljoin(_ORIGIN, href)) for href in identity]
@@ -396,11 +447,8 @@ class JungolSource:
                 tab_urls[0].scheme, tab_urls[0].netloc, tab_urls[0].path
             ) != ('https', 'jungol.co.kr', f'/problem/{candidate.id}'):
                 raise SourceSchemaError(f"상세 문제 번호 불일치: 요청 {candidate.id}, URL {page.url}, 문제 탭 {identity}")
-            stats = header.locator('[title="맞힌 사람"]')
-            if stats.count() != 1:
-                raise SourceSchemaError("맞힌 사람 통계가 중복됩니다.")
-            text = stats.inner_text().strip()
-            if text in _EMPTY or (text == '' and stats.locator('span.num').count() == 1):
+            text = stat['text']
+            if text in _EMPTY or (text == '' and stat['numbers'] == 1):
                 solvers = Unavailable()
             elif re.fullmatch(r'(?:\d+|\d{1,3}(?:,\d{3})+)', text):
                 solvers = Known(int(text.replace(',', '')))
@@ -410,5 +458,25 @@ class JungolSource:
                            tier=candidate.tier, pass_rate=candidate.pass_rate, listed_at=candidate.listed_at,
                            solver_count=solvers, details_observed_at=now())
         except Error as error:
-            self._check_access(page.evaluate(_SNAPSHOT))
-            raise SourceSchemaError(f"상세 통계를 확인할 수 없습니다: {error}") from error
+            raise SourceAccessError(f"상세 브라우저 작업 실패: {error}") from error
+
+    def _wait_detail_stat(self) -> dict:
+        page = self._detail_page
+        header = page.locator('article main').filter(has=page.locator('h1')).first
+        deadline = time.monotonic() + self._dom_timeout / 1000
+        last_stats = None
+        while True:
+            snapshot = page.evaluate(_SNAPSHOT)
+            self._check_access(snapshot)
+            stats = header.locator('[title="맞힌 사람"]').evaluate_all("""els => els.map(e => ({
+                text:e.innerText.trim(), numbers:e.querySelectorAll('span.num').length
+            }))""")
+            ready = not snapshot['busy'] and not self._pending
+            if ready and stats and stats == last_stats:
+                if len(stats) != 1:
+                    raise SourceSchemaError("맞힌 사람 통계가 중복됩니다.")
+                return stats[0]
+            if time.monotonic() >= deadline:
+                raise SourceSchemaError("상세 통계 준비 시간 초과 또는 DOM 구조 변경입니다.")
+            last_stats = stats if ready else None
+            page.wait_for_timeout(50)

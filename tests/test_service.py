@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from algorithm_problem_picker.models import CompletedListing, Known, SearchCriteria, UserReference, now
-from algorithm_problem_picker.ports import SourceAccessError
+from algorithm_problem_picker.ports import SourceAccessError, SourceCompletenessError
 from algorithm_problem_picker.service import Picker
 
 
@@ -63,6 +63,23 @@ def test_detail_failure_never_returns_result(problem):
         Picker(source).list(SearchCriteria(), limit=1)
 
 
+@pytest.mark.parametrize('operation', ['list', 'recommend'])
+def test_incomplete_collection_never_enriches_sorts_or_samples(problem, monkeypatch, operation):
+    source = FixedSource([problem()])
+    def incomplete(*args):
+        raise SourceCompletenessError('additional load never completed')
+    def premature(*args, **kwargs):
+        pytest.fail('selection before complete collection')
+    monkeypatch.setattr(source, 'collect', incomplete)
+    monkeypatch.setattr('algorithm_problem_picker.service.sort_problems', premature)
+    monkeypatch.setattr('algorithm_problem_picker.service.recommend', premature)
+    stages = []
+    with pytest.raises(SourceCompletenessError):
+        getattr(Picker(source, report=lambda progress: stages.append(progress.stage)), operation)(SearchCriteria())
+    assert not source.details
+    assert 'Complete' not in stages and stages[-1] == 'Failed'
+
+
 def test_recommend_enriches_all_candidates_before_sample(problem, monkeypatch):
     source = FixedSource([problem(1000+i) for i in range(12)])
     def sample(items, k):
@@ -99,3 +116,15 @@ def test_sort_full_candidates_before_limit_keeps_unrated(problem):
     result = Picker(source).list(SearchCriteria(), sort='rate', order='desc', limit=1)
     assert result.problems[0].id == 1002 and result.eligible_count == 3
     assert len(source.details) == 3
+
+
+def test_solver_filter_uses_enriched_counts_and_retains_listing_values(problem, monkeypatch):
+    source = FixedSource([problem(1000, solvers=Known(0)), problem(1001, solvers=Known(6000))])
+    def details(candidate):
+        return replace(candidate, solver_count=Known(5171 if candidate.id == 1000 else 0))
+    monkeypatch.setattr(source, 'read_details', details)
+    result = Picker(source).list(SearchCriteria(min_solvers=5000))
+    assert [p.id for p in result.problems] == [1000]
+    assert result.problems[0].solver_count == Known(5171)
+    assert result.problems[0].pass_rate == source.problems[0].pass_rate
+    assert result.problems[0].tier == source.problems[0].tier

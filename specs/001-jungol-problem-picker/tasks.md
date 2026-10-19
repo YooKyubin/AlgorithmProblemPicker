@@ -239,3 +239,14 @@ US1 조회 → US2 추천 → US3 추가 정렬 → US4 열기 순서로 기능�
   SC-006 → T012~T018·T022·T025·T033·T037.
 - 설치·테스트·라이브 검증은 구현 단계의 작업이다. 이 문서 작성으로 실행 완료를 주장하지 않는다.
 - 영구 캐시·로그인·JSON/파일 출력·타 플랫폼·내부 API 구현 작업은 추가하지 않는다.
+
+## Phase 8: Convergence
+
+- [X] T038 [HIGH] `src/algorithm_problem_picker/jungol.py`의 `_wait_listing`·`_collect`에서 추가 로드 버튼이 일시적으로 사라졌다는 이유로 수집을 완료하지 않도록 수정한다; 현재는 버튼 제거 후 400ms 뒤 새 행이 생기는 로컬 DOM에서 실제 후보 4개 중 3개만 담은 CompletedListing을 반환한다(F1). 공개 DOM의 로딩 상태·요청 완료·새 ID·정상 종료를 함께 확인하고 완료를 입증할 수 없는 상태는 완전성 실패로 처리한다; `tests/test_jungol_dom.py`에 지연된 행/버튼 갱신 및 진행 없음 회귀 검증을 추가하고 `tests/test_service.py`에서 전체 후보 확인 전 정렬·추천·결과 반환이 없음을 확인한다 per FR-008, FR-009, FR-013, US1/AC3, US2/AC1, T013, T017 (partial)
+- [X] T039 [HIGH] `src/algorithm_problem_picker/jungol.py`의 `read_details`에서 통계 요소의 존재만으로 값을 확정하지 말고 해당 상세의 로딩·관련 요청과 통계 준비 완료를 확인한 뒤 푼 사람 수와 관측 시각을 반환하도록 수정한다; 현재는 aria-busy=true인 상세의 임시 0을 Known(0)으로 반환하고 400ms 뒤 표시되는 실제 5,171을 놓친다(F2). 로딩 중 빈 값도 Unavailable로 확정하지 않으며 접근·구조·시간 초과는 실패로 전파하고 목록 티어·정답률은 보존한다; `tests/test_jungol_dom.py`와 `tests/test_service.py`에 지연된 통계 갱신·로딩 중 빈 값·실제 0/명시적 미제공·최종 푼 사람 수 필터 검증을 추가한다 per FR-002, FR-005, FR-012, SC-001, T013, T018, T020 (partial)
+- [X] T040 [HIGH] `src/algorithm_problem_picker/jungol.py`의 `resolve_user`·`_wait_user_page`에서 검색어 입력 직후 이전 결과를 현재 검색 결과로 판정하지 않도록 수정한다; 현재는 @Other가 남아 있고 400ms 뒤 @Sample로 바뀌는 로컬 사용자 UI에서 정확한 Sample 검색을 사용자 없음으로 종료한다(F3). 현재 검색어에 대한 공개 UI 갱신 완료를 확인한 뒤 전체 결과의 정확한 핸들·없음·모호함을 판정하고, 같은 핸들 목록이 유지되는 정상 갱신과 지연된 페이지 전환도 구분한다; 고정 대기시간 증가로 대체하지 말고 `tests/test_jungol_dom.py`에 최초 검색의 이전 결과·지연된 정확 일치/빈 결과·동일 핸들 목록 갱신 회귀 검증을 추가한다 per FR-003, FR-004, FR-012, US1/AC2, T013, T015 (partial)
+
+## Phase 9: Convergence
+
+- [ ] T041 [HIGH] `src/algorithm_problem_picker/jungol.py`의 `_wait_listing`·`_collect`에서 추가 로드 요청의 전송 완료를 목록 DOM 반영 및 최종 종료의 증거로 사용하지 않도록 보완한다; 현재는 버튼 클릭 → 로컬 fetch 응답 완료 → 버튼 제거 → 400ms 뒤 새 행 추가 순서에서 실제 후보 4개 중 3개만 담은 CompletedListing을 반환한다(F1). 해당 로드의 공개 결과 DOM 반영과 새 ID 또는 정상 종료를 확인하고, 완료를 입증할 수 없으면 완전성 오류로 종료한다; 고정 대기시간 증가는 해결책으로 삼지 않는다. `tests/test_jungol_dom.py`에 응답 완료 후 지연된 행/진행 컨트롤 반영과 빈 최종 로드의 완료 근거 검증을 추가하고, `tests/test_service.py`에서 누락된 후보로 정렬·추천·성공 결과를 반환하지 않음을 검증한다 per FR-008, FR-009, FR-013, US1/AC3, US2/AC1, T013, T017, T038 (partial)
+- [ ] T042 [HIGH] `src/algorithm_problem_picker/jungol.py`의 `_update_user_page`·`_wait_user_page`에서 요청 완료 카운터만으로 현재 검색 결과의 DOM 갱신을 확정하지 않도록 보완한다; 현재는 이전 @Other가 남아 있는 UI에서 검색 요청 응답 완료 후 400ms 뒤 @Sample을 반영하면 정확한 Sample 검색을 사용자 없음으로 종료한다(F2). 현재 검색어/페이지에 대한 결과 반영 완료를 확인한 뒤 정확 일치·없음·모호함을 판정하고, 동일 핸들 목록이 유지되는 정상 갱신도 지원하되 완료 근거가 없으면 사용자 확인 실패로 처리한다; 고정 대기시간 증가는 해결책으로 삼지 않는다. `tests/test_jungol_dom.py`에 요청 완료와 DOM 반영이 분리된 최초 검색·페이지 전환·빈 결과·동일 핸들 결과의 회귀 검증을 추가한다 per FR-003, FR-004, FR-012, US1/AC2, T013, T015, T040 (partial)

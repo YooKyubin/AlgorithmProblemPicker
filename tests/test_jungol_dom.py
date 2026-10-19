@@ -64,6 +64,52 @@ def test_cursor_loading_and_end(source):
     assert len(source.collect(SearchCriteria(), None).candidates) == 4
 
 
+def test_cursor_disappears_before_delayed_rows(source):
+    addition = html('pagination.html').split('<tbody>')[1].split('</tbody>')[0]
+    body = html('list.html').replace('</article>', '<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=function(){
+        this.remove(); setTimeout(()=>{
+        document.querySelector('tbody').insertAdjacentHTML('beforeend', ROW)},400)
+        }</script>'''.replace('ROW', json.dumps(addition))
+    serve(source, body)
+    assert [p.id for p in source.collect(SearchCriteria(), None).candidates] == [1000,1001,1002,1003]
+
+
+def test_cursor_disappears_without_completion_evidence(source):
+    serve(source, html('list.html').replace('</article>',
+        '<button onclick="this.remove()">더 불러오기</button></article>'))
+    source._dom_timeout = 200
+    with pytest.raises(SourceCompletenessError):
+        source.collect(SearchCriteria(), None)
+
+
+def test_cursor_waits_for_loading_and_delayed_next_button(source):
+    addition = html('pagination.html').split('<tbody>')[1].split('</tbody>')[0]
+    body = html('list.html').replace('</article>', '<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=function(){
+        this.remove(); const article=document.querySelector('article');
+        article.setAttribute('aria-busy','true');
+        setTimeout(()=>document.querySelector('tbody').insertAdjacentHTML('beforeend', ROW),80);
+        setTimeout(()=>{article.removeAttribute('aria-busy');
+        article.insertAdjacentHTML('beforeend','<button>더 불러오기</button>')},400)
+        }</script>'''.replace('ROW', json.dumps(addition))
+    serve(source, body)
+    source._dom_timeout = 650
+    with pytest.raises(SourceCompletenessError):
+        source.collect(SearchCriteria(), None)
+    assert source._list_page.get_by_role('button', name='더 불러오기', exact=True).count() == 1
+
+
+def test_cursor_completed_empty_request_is_terminal(source):
+    body = html('list.html').replace('</article>', '<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=async function(){
+        this.disabled=true; await fetch('/fixture-more'); this.remove();
+        }</script>'''
+    serve(source, body)
+    source._context.route('**/fixture-more', lambda route: route.fulfill(status=204))
+    assert len(source.collect(SearchCriteria(), None).candidates) == 3
+
+
 def test_repeating_page_fails(source):
     serve(source, html('list.html').replace('</article>', '<a rel="next" href="?type=problem&sort=idAsc&unrated=include">다음</a></article>'))
     with pytest.raises(SourceCompletenessError):
@@ -131,6 +177,43 @@ def test_explicit_empty_solver_stat(source):
     assert isinstance(source.read_details(candidate).solver_count, Unavailable)
 
 
+@pytest.mark.parametrize('placeholder', ['0', ''])
+def test_detail_waits_for_loaded_solver_stat(source, placeholder):
+    serve(source, html('list.html'))
+    candidate = source.collect(SearchCriteria(), None).candidates[0]
+    body = html('detail.html').replace('5,171', placeholder).replace('<article>', '<article aria-busy="true">')
+    body += '''<script>setTimeout(()=>{
+        document.querySelector('[title="맞힌 사람"] .num').textContent='5,171';
+        document.querySelector('article').removeAttribute('aria-busy')},400)</script>'''
+    serve(source, body)
+    result = source.read_details(candidate)
+    assert result.solver_count == Known(5171)
+    assert result.tier == candidate.tier and result.pass_rate == candidate.pass_rate
+    assert source._detail_page.locator('article').get_attribute('aria-busy') is None
+
+
+def test_loaded_zero_solver_stat_is_known(source):
+    serve(source, html('list.html'))
+    candidate = source.collect(SearchCriteria(), None).candidates[0]
+    serve(source, html('detail.html').replace('5,171', '0'))
+    assert source.read_details(candidate).solver_count == Known(0)
+
+
+@pytest.mark.parametrize('failure', ['loading', 'schema', 'access'])
+def test_detail_never_returns_placeholder_on_loading_failure(source, failure):
+    serve(source, html('list.html'))
+    candidate = source.collect(SearchCriteria(), None).candidates[0]
+    body = html('detail.html').replace('<article>', '<article aria-busy="true">')
+    if failure != 'loading':
+        replacement = '<h1>로그인이 필요합니다</h1>' if failure == 'access' else '<h1>new layout</h1>'
+        body += '<script>setTimeout(()=>{document.querySelector("article").outerHTML=BODY},100)</script>'.replace(
+            'BODY', json.dumps('<article>' + replacement + '</article>'))
+    serve(source, body)
+    source._dom_timeout = 250
+    with pytest.raises(SourceAccessError if failure == 'access' else SourceSchemaError):
+        source.read_details(candidate)
+
+
 @pytest.mark.parametrize('matches', [0, 1, 2])
 def test_exact_user_resolution(source, matches):
     users = html('user.html')
@@ -165,6 +248,89 @@ def test_user_pagination_waits_for_new_results_and_scans_last_group(source):
       }</script>''')
     serve(source, users)
     assert source.resolve_user('Sample').account_id == 42
+
+
+def user_listing():
+    table = html('list.html').split('<table>')[1].split('</table>')[0]
+    return html('user.html').replace('</article>', '<table>' + table + '</table></article>')
+
+
+@pytest.mark.parametrize('empty', [False, True])
+def test_user_search_waits_for_current_query_results(source, empty):
+    body = user_listing()
+    if not empty:
+        body = body.replace('@Sample ', '@Other ')
+    update = ("document.querySelector('.jg-find-result').remove();"
+              "document.querySelector('#users').insertAdjacentHTML('beforeend',"
+              "'<p class=\"jg-find-note\">검색 결과가 없습니다</p>')") if empty else (
+                  "document.querySelector('.jg-find-result h3').textContent='@Sample'")
+    body += '''<script>document.querySelector('.jg-find-search input').oninput=()=>{
+        setTimeout(()=>{UPDATE},400)}</script>'''.replace('UPDATE', update)
+    serve(source, body)
+    if empty:
+        with pytest.raises(UserResolutionError, match='없음'):
+            source.resolve_user('Sample')
+        assert source._list_page.locator('.jg-find-note').inner_text() == '검색 결과가 없습니다'
+    else:
+        assert source.resolve_user('Sample').account_id == 42
+
+
+def test_user_search_same_handles_waits_for_own_request(source):
+    requests = []
+    body = user_listing() + '''<script>
+        document.querySelector('.jg-find-search input').oninput=()=>{
+        setTimeout(()=>fetch('/fixture-search'),400)};
+        </script>'''
+    serve(source, body)
+    def search(route):
+        requests.append(route.request.url)
+        route.fulfill(status=204)
+    source._context.route('**/fixture-search', search)
+    assert source.resolve_user('Sample').account_id == 42
+    assert len(requests) == 1
+
+
+def test_user_search_without_update_evidence_fails(source):
+    serve(source, user_listing() + '''<script>
+        document.querySelector('.jg-find-search input').oninput=()=>{};
+        </script>''')
+    source._dom_timeout = 200
+    with pytest.raises(UserResolutionError, match='완전히'):
+        source.resolve_user('Sample')
+
+
+def test_user_cancel_preserves_interrupt_when_observer_cleanup_fails(source, monkeypatch):
+    from playwright.sync_api import Error, Locator
+    serve(source, user_listing())
+    def cancel(*args):
+        raise KeyboardInterrupt()
+    class DisconnectedObserver:
+        def evaluate(self, *args):
+            raise Error('driver disconnected during cleanup')
+        def dispose(self):
+            pass
+    monkeypatch.setattr(source, '_wait_user_page', cancel)
+    monkeypatch.setattr(Locator, 'evaluate_handle', lambda *args: DisconnectedObserver())
+    with pytest.raises(KeyboardInterrupt):
+        source.resolve_user('Sample')
+
+
+def test_user_pages_with_same_handles_still_detect_ambiguity(source):
+    body = user_listing().replace('</main>', '''<nav>
+        <button class="page-num active" onclick="selectPage(1)">1</button>
+        <button class="page-num" onclick="selectPage(2)">2</button></nav></main>''')
+    body += '''<script>
+        document.querySelector('.jg-find-search input').oninput=()=>{
+            document.querySelector('.jg-find-result h3').textContent='@Sample'};
+        function selectPage(n){
+            document.querySelectorAll('.page-num').forEach(e=>
+                e.classList.toggle('active',Number(e.textContent)===n));
+            setTimeout(()=>{document.querySelector('.jg-find-result h3').textContent='@Sample'},150)
+        }</script>'''
+    serve(source, body)
+    source._dom_timeout = 600
+    with pytest.raises(UserResolutionError, match='모호'):
+        source.resolve_user('Sample')
 
 
 def test_filter_not_applied(source):

@@ -4,4 +4,10 @@
 <main id="users" hidden><div class="jg-find-search"><input placeholder="검색"></div>
 <div class="jg-find-result"><button onclick="location.href='/problem?solvedBy=42&solvedByMode=include'"><h3>@Sample <span>닉네임</span></h3></button></div>
 </main>
-</article></body></html>
+</article><script>
+document.querySelector('.jg-find-search input').oninput=()=>{
+    const note=document.createElement('p');note.className='jg-find-note';note.textContent='검색 중';
+    document.querySelector('#users').append(note);
+    setTimeout(()=>{note.textContent=''},80);
+};
+</script></body></html>
