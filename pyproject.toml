@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "algorithm-problem-picker"
+version = "0.1.0"
+description = "JUNGOL 공개 문제 검색과 무작위 추천 CLI"
+requires-python = ">=3.12"
+dependencies = ["typer>=0.16", "rich>=14", "playwright>=1.55"]
+
+[project.scripts]
+jpick = "algorithm_problem_picker.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
