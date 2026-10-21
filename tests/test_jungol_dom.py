@@ -1,11 +1,12 @@
 from pathlib import Path
 import json
+from urllib.parse import urlencode
 
 import pytest
 from playwright.sync_api import sync_playwright
 
 from algorithm_problem_picker.jungol import JungolSource
-from algorithm_problem_picker.models import Known, SearchCriteria, Unavailable, Unrated
+from algorithm_problem_picker.models import Known, SearchCriteria, Unavailable, Unrated, UserReference, now
 from algorithm_problem_picker.ports import SourceAccessError, SourceCompletenessError, SourceSchemaError, UserResolutionError
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'jungol'
@@ -33,17 +34,57 @@ def html(name):
     return (FIXTURES / name).read_text(encoding='utf-8')
 
 
-def test_list_and_detail_distinct_metrics(source):
-    serve(source, lambda url: html('detail.html' if url.endswith('/1000') else 'list.html'))
+def test_list_distinct_metrics(source):
+    serve(source, html('list.html'))
     listing = source.collect(SearchCriteria(), None)
     assert len(listing.candidates) == 3
     assert listing.candidates[0].pass_rate.value.as_tuple().exponent == -2
     assert isinstance(listing.candidates[1].tier, Unrated)
     assert isinstance(listing.candidates[2].pass_rate, Unavailable)
-    result = source.read_details(listing.candidates[0])
-    assert result.solver_count == Known(5171)
-    assert result.pass_rate == listing.candidates[0].pass_rate
-    assert result.listed_at == listing.candidates[0].listed_at
+    assert listing.candidates[0].accepted_count == Known(6510)
+    assert listing.candidates[1].accepted_count == Known(0)
+    assert isinstance(listing.candidates[2].accepted_count, Unavailable)
+
+
+@pytest.mark.parametrize('text,expected', [('0',Known(0)),(' 3,145 ',Known(3145)),('3145',Known(3145)),
+    ('-',Unavailable()),('—',Unavailable()),('미확인',Unavailable()),('미제공',Unavailable())])
+def test_accepted_cell_values(source, text, expected):
+    serve(source, html('list.html').replace('>6510<','>'+text+'<'))
+    assert source.collect(SearchCriteria(),None).candidates[0].accepted_count == expected
+
+
+@pytest.mark.parametrize('cell', ['', '<td data-col="정답"></td>',
+    '<td data-col="정답"><a href="/problem/1000"></a></td>',
+    '<td data-col="정답">1</td><td data-col="정답">2</td>',
+    *['<td data-col="정답">'+text+'</td>' for text in ['31,45','3 145','-1','1.5','unknown','１２','1,000,00']]])
+def test_invalid_accepted_is_schema_failure(source, cell):
+    source._dom_timeout = 200
+    serve(source, html('list.html').replace('<td data-col="정답">6510</td>',cell))
+    with pytest.raises(SourceSchemaError, match='1000.*정답'):
+        source.collect(SearchCriteria(),None)
+
+
+@pytest.mark.parametrize('operation', ['list','recommend'])
+@pytest.mark.parametrize('filtered', [False,True])
+@pytest.mark.parametrize('status', ['all','solved','unsolved'])
+def test_actual_picker_has_no_detail_requests(source, monkeypatch, operation, filtered, status):
+    from algorithm_problem_picker.service import Picker
+    requests = []
+    source._context.on('request', lambda request: requests.append(request.url) if request.resource_type == 'document' else None)
+    body = html('tier-pagination.html')
+    params = dict(type='problem',sort='idAsc',unrated='include',page=2)
+    if status != 'all':
+        params.update(solvedBy='42',solvedByMode='include' if status == 'solved' else 'exclude')
+        monkeypatch.setattr(source,'resolve_user',lambda handle: UserReference(handle,42,now()))
+    first = body.replace('</article>','<a rel="next" href="?'+urlencode(params)+'">다음</a></article>')
+    second = body.replace('1000','1003').replace('1001','1004').replace('1002','1005')
+    serve(source, lambda url: second if 'page=2' in url else first)
+    criteria = SearchCriteria(min_accepted=0 if filtered else None,status=status,user_handle='' if status == 'all' else 'Sample')
+    result = getattr(Picker(source),operation)(criteria,**({'limit':1} if operation == 'list' else {'count':1}))
+    assert result.fetched_count == 6 and result.returned_count == 1
+    assert result.eligible_count == (4 if filtered else 6)
+    assert len(requests) == 2 and all('/problem?' in url for url in requests)
+    assert len(source._context.pages) == 1
 
 
 def test_next_page_and_duplicate_first_record(source):
@@ -140,6 +181,21 @@ def test_partial_hydration_and_empty_alert(source):
     assert len(source.collect(SearchCriteria(), None).candidates) == 3
 
 
+def test_accepted_waits_for_nonempty_public_cell(source):
+    body = html('list.html').replace('>6510<','><')
+    body += '''<script>setTimeout(()=>document.querySelector('td[data-col="정답"]').textContent='6,510',150)</script>'''
+    serve(source,body)
+    assert source.collect(SearchCriteria(),None).candidates[0].accepted_count == Known(6510)
+
+
+@pytest.mark.parametrize('replacement', ['<td data-col="other">','<td data-col="問題">'])
+def test_missing_problem_cell_fails_instead_of_dropping_row(source, replacement):
+    serve(source,html('list.html').replace('<td data-col="문제">',replacement,1))
+    source._dom_timeout = 200
+    with pytest.raises(SourceSchemaError,match='문제 링크'):
+        source.collect(SearchCriteria(),None)
+
+
 def test_explicit_empty_rate_anchor_is_unavailable(source):
     serve(source, html('list.html').replace('47.45%', '<a href="/problem/1000"></a>'))
     assert isinstance(source.collect(SearchCriteria(), None).candidates[0].pass_rate, Unavailable)
@@ -160,58 +216,6 @@ def test_schema_change_not_unknown(source, body):
     source._dom_timeout = 150
     with pytest.raises(SourceSchemaError):
         source.collect(SearchCriteria(), None)
-
-
-def test_detail_identity_mismatch(source):
-    serve(source, html('list.html'))
-    candidate = source.collect(SearchCriteria(), None).candidates[0]
-    serve(source, html('detail.html').replace('/problem/1000','/problem/1001'))
-    with pytest.raises(SourceSchemaError):
-        source.read_details(candidate)
-
-
-def test_explicit_empty_solver_stat(source):
-    serve(source, html('list.html'))
-    candidate = source.collect(SearchCriteria(), None).candidates[0]
-    serve(source, html('detail.html').replace('5,171',''))
-    assert isinstance(source.read_details(candidate).solver_count, Unavailable)
-
-
-@pytest.mark.parametrize('placeholder', ['0', ''])
-def test_detail_waits_for_loaded_solver_stat(source, placeholder):
-    serve(source, html('list.html'))
-    candidate = source.collect(SearchCriteria(), None).candidates[0]
-    body = html('detail.html').replace('5,171', placeholder).replace('<article>', '<article aria-busy="true">')
-    body += '''<script>setTimeout(()=>{
-        document.querySelector('[title="맞힌 사람"] .num').textContent='5,171';
-        document.querySelector('article').removeAttribute('aria-busy')},400)</script>'''
-    serve(source, body)
-    result = source.read_details(candidate)
-    assert result.solver_count == Known(5171)
-    assert result.tier == candidate.tier and result.pass_rate == candidate.pass_rate
-    assert source._detail_page.locator('article').get_attribute('aria-busy') is None
-
-
-def test_loaded_zero_solver_stat_is_known(source):
-    serve(source, html('list.html'))
-    candidate = source.collect(SearchCriteria(), None).candidates[0]
-    serve(source, html('detail.html').replace('5,171', '0'))
-    assert source.read_details(candidate).solver_count == Known(0)
-
-
-@pytest.mark.parametrize('failure', ['loading', 'schema', 'access'])
-def test_detail_never_returns_placeholder_on_loading_failure(source, failure):
-    serve(source, html('list.html'))
-    candidate = source.collect(SearchCriteria(), None).candidates[0]
-    body = html('detail.html').replace('<article>', '<article aria-busy="true">')
-    if failure != 'loading':
-        replacement = '<h1>로그인이 필요합니다</h1>' if failure == 'access' else '<h1>new layout</h1>'
-        body += '<script>setTimeout(()=>{document.querySelector("article").outerHTML=BODY},100)</script>'.replace(
-            'BODY', json.dumps('<article>' + replacement + '</article>'))
-    serve(source, body)
-    source._dom_timeout = 250
-    with pytest.raises(SourceAccessError if failure == 'access' else SourceSchemaError):
-        source.read_details(candidate)
 
 
 @pytest.mark.parametrize('matches', [0, 1, 2])
@@ -339,6 +343,85 @@ def test_filter_not_applied(source):
         source.collect(SearchCriteria(min_tier=2), None)
 
 
+@pytest.mark.parametrize('bounds', [dict(min_tier=9, max_tier=14), dict(min_tier=9), dict(max_tier=14)])
+@pytest.mark.parametrize('navigation', ['first', 'next', 'more'])
+def test_tier_absence_preserved_across_listing(source, bounds, navigation):
+    body = html('tier-pagination.html')
+    addition = body.split('<tbody>')[1].split('</tbody>')[0].replace('1000', '1003').replace('1001', '1004').replace('1002', '1005')
+    if navigation == 'next':
+        first = body.replace('</article>', '<a rel="next" href="?'+urlencode(
+            dict(type='problem', sort='idAsc', unrated='exclude', **{
+                {'min_tier':'minTier','max_tier':'maxTier'}[k]:v for k,v in bounds.items()}, page=2))+'">다음</a></article>')
+        second = body.replace(body.split('<tbody>')[1].split('</tbody>')[0], addition)
+        serve(source, lambda url: second if 'page=2' in url else first)
+    elif navigation == 'more':
+        body = body.replace('</article>', '<button id="more">더 불러오기</button></article>')
+        body += '<script>document.querySelector("#more").onclick=function(){document.querySelector("tbody").insertAdjacentHTML("beforeend", ROW);this.remove()}</script>'.replace('ROW', json.dumps(addition))
+        serve(source, body)
+    else:
+        serve(source, body)
+    listing = source.collect(SearchCriteria(**bounds), None)
+    assert len(listing.candidates) == (3 if navigation == 'first' else 6)
+    assert isinstance(listing.candidates[1].tier, Unrated)
+    assert isinstance(listing.candidates[2].tier, Unavailable)
+
+
+@pytest.mark.parametrize('bounds', [dict(min_tier=10), dict(max_tier=8), dict(min_tier=10,max_tier=14)])
+def test_rated_outside_range_has_diagnostics(source, bounds):
+    serve(source, html('tier-pagination.html'))
+    with pytest.raises(SourceAccessError, match='1000.*9.*요청') as caught:
+        source.collect(SearchCriteria(**bounds), None)
+    if len(bounds) == 1:
+        assert '제한 없음' in str(caught.value)
+
+
+@pytest.mark.parametrize('replacement', ['', '<img src="/solved/99.svg">', '<img src="/solved/9.svg"><img src="/solved/10.svg">'])
+def test_tier_schema_diagnostics(source, replacement):
+    serve(source, html('tier-pagination.html').replace('<img src="/solved/9.svg">', replacement))
+    with pytest.raises(SourceSchemaError, match='1000.*티어'):
+        source.collect(SearchCriteria(min_tier=9), None)
+
+
+@pytest.mark.parametrize('change', ['url', 'duplicate', 'ui'])
+def test_filters_reverified_after_more(source, change):
+    body = html('tier-pagination.html').replace('</article>', '<button id="more">더 불러오기</button></article>')
+    update = {'url': "history.replaceState(null,'',location.href.replace('minTier=9','minTier=8'))",
+              'duplicate': "history.replaceState(null,'',location.href+'&minTier=9')",
+              'ui': "document.querySelector('[aria-label=\"난이도 하한\"]').setAttribute('aria-valuenow','8')"}[change]
+    addition = body.split('<tbody>')[1].split('</tbody>')[0].replace('1000','1003')
+    body += '<script>document.querySelector("#more").onclick=function(){UPDATE;document.querySelector("tbody").insertAdjacentHTML("beforeend", ROW);this.remove()}</script>'.replace('UPDATE',update).replace('ROW',json.dumps(addition))
+    serve(source, body)
+    with pytest.raises(SourceAccessError):
+        source.collect(SearchCriteria(min_tier=9), None)
+
+
+@pytest.mark.parametrize('status', ['solved', 'unsolved'])
+def test_public_user_filters_preserved(source, status):
+    serve(source, html('tier-pagination.html'))
+    listing = source.collect(SearchCriteria(min_tier=9,status=status,user_handle='Sample'), UserReference('Sample',42,now()))
+    assert len(listing.candidates) == 3
+    assert 'solvedBy=42' in source._list_page.url
+    assert 'solvedByMode='+('include' if status == 'solved' else 'exclude') in source._list_page.url
+
+
+@pytest.mark.parametrize('navigation',['first','next'])
+@pytest.mark.parametrize('key',['type','sort','unrated','minTier','maxTier','solvedBy','solvedByMode'])
+def test_required_filters_cannot_be_lost_on_any_page(source, navigation, key):
+    params = dict(type='problem',sort='idAsc',unrated='exclude',minTier=9,maxTier=14,
+                  solvedBy=42,solvedByMode='include',page=2)
+    params.pop(key)
+    body = html('tier-pagination.html')
+    if navigation == 'first':
+        body += '<script>const lost=new URL(location.href);lost.searchParams.delete(KEY);history.replaceState(null,"",lost)</script>'.replace('KEY',json.dumps(key))
+        serve(source,body)
+    else:
+        first = body.replace('</article>','<a rel="next" href="?'+urlencode(params)+'">다음</a></article>')
+        second = body.replace('1000','1003').replace('1001','1004').replace('1002','1005')
+        serve(source,lambda url:second if 'page=2' in url else first)
+    with pytest.raises(SourceAccessError):
+        source.collect(SearchCriteria(min_tier=9,max_tier=14,status='solved',user_handle='Sample'),UserReference('Sample',42,now()))
+
+
 @pytest.mark.parametrize('error', [RuntimeError('failure'), KeyboardInterrupt()])
 def test_cleanup_on_failure_and_cancel(monkeypatch, error):
     browser = context = None
@@ -362,4 +445,82 @@ def test_navigation_timeout_is_failure(source):
 def test_progress_cannot_present_incomplete_collection():
     from algorithm_problem_picker.models import Progress, Stage
     with pytest.raises(AssertionError):
-        Progress(stage=Stage.COLLECTING).advance(Stage.PRESENTED)
+        Progress(stage=Stage.COLLECTING).advance(Stage.COMPLETE)
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason='001/T041: request completion precedes public result DOM')
+@pytest.mark.parametrize('operation', ['list','recommend'])
+def test_known_t041_delayed_rows_after_completed_request(source, operation):
+    from algorithm_problem_picker.service import Picker
+    addition = html('pagination.html').split('<tbody>')[1].split('</tbody>')[0]
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=async function(){
+        this.disabled=true; await fetch('/fixture-more');this.remove();
+        setTimeout(()=>document.querySelector('tbody').insertAdjacentHTML('beforeend',ROW),400)
+        }</script>'''.replace('ROW',json.dumps(addition))
+    serve(source,body)
+    source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
+    try:
+        result = getattr(Picker(source),operation)(SearchCriteria())
+    except SourceCompletenessError:
+        return  # A proven failure also prevents an incomplete success result.
+    assert result.fetched_count == result.eligible_count == 4
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason='001/T041: empty load requires public completion evidence')
+def test_known_t041_empty_request_alone_is_not_completion(source):
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=async function(){
+        this.disabled=true;await fetch('/fixture-more');this.remove()};</script>'''
+    serve(source,body)
+    source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
+    source._dom_timeout = 250
+    try:
+        source.collect(SearchCriteria(),None)
+    except SourceCompletenessError:
+        return
+    assert False, 'transport completion alone returned CompletedListing'
+
+
+@pytest.mark.xfail(strict=True, raises=UserResolutionError, reason='001/T042: completed search request precedes result DOM')
+@pytest.mark.parametrize('page_change', [False,True])
+def test_known_t042_delayed_user_results_after_completed_request(source, page_change):
+    body = user_listing().replace('@Sample ', '@Other ')
+    if page_change:
+        body = body.replace('</main>','''<nav><button class="page-num active">1</button>
+            <button class="page-num" id="next-user">2</button></nav></main>''')
+        body += '''<script>document.querySelector('#next-user').onclick=async function(){
+            document.querySelector('button.active').classList.remove('active');this.classList.add('active');
+            await fetch('/fixture-search');setTimeout(()=>document.querySelector('.jg-find-result h3').textContent='@Sample',400)};</script>'''
+    else:
+        body += '''<script>document.querySelector('.jg-find-search input').oninput=async()=>{
+            await fetch('/fixture-search');setTimeout(()=>document.querySelector('.jg-find-result h3').textContent='@Sample',400)};</script>'''
+    serve(source,body)
+    source._context.route('**/fixture-search',lambda route:route.fulfill(status=204))
+    assert source.resolve_user('Sample').account_id == 42
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason='001/T042: same handle needs its current result completion')
+def test_known_t042_same_handle_refresh_after_completed_request(source):
+    body = user_listing()+'''<script>document.querySelector('.jg-find-search input').oninput=async()=>{
+        await fetch('/fixture-search');setTimeout(()=>{
+        document.querySelector('.jg-find-result button').setAttribute('onclick',"location.href='/problem?solvedBy=84&solvedByMode=include'")},400)};</script>'''
+    serve(source,body)
+    source._context.route('**/fixture-search',lambda route:route.fulfill(status=204))
+    assert source.resolve_user('Sample').account_id == 84
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason='001/T042: delayed empty search must replace previous match')
+def test_known_t042_empty_result_after_completed_request(source):
+    body = user_listing()+'''<script>document.querySelector('.jg-find-search input').oninput=async()=>{
+        await fetch('/fixture-search');setTimeout(()=>{
+        document.querySelector('.jg-find-result').remove();
+        document.querySelector('#users').insertAdjacentHTML('beforeend','<p class="jg-find-note">검색 결과가 없습니다</p>')},400)};</script>'''
+    serve(source,body)
+    source._context.route('**/fixture-search',lambda route:route.fulfill(status=204))
+    try:
+        source.resolve_user('Sample')
+    except UserResolutionError:
+        assert source._list_page.locator('.jg-find-result').count() == 0
+        return
+    assert False, 'stale previous match resolved before empty current results'

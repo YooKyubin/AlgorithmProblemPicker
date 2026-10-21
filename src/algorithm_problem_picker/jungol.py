@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 from playwright.sync_api import Browser, BrowserContext, Error, JSHandle, Page, sync_playwright
 
-from .models import Candidate, CompletedListing, Known, Problem, Rated, SearchCriteria
+from .models import CompletedListing, Known, Problem, Rated, SearchCriteria
 from .models import Status, Unavailable, Unrated, UserReference, now
 from .ports import SourceAccessError, SourceCompletenessError, SourceSchemaError, UserResolutionError
 
@@ -25,19 +25,19 @@ _SNAPSHOT = r"""() => {
         [...t.querySelectorAll('th')].some(e => e.innerText.trim() === '문제') &&
         [...t.querySelectorAll('th')].some(e => e.innerText.trim() === '정답률'));
     const rows = tables.flatMap(t => [...t.querySelectorAll('tbody tr')])
-        .filter(r => r.querySelector('td[data-col="문제"]'))
         .map(r => {
             const cell = r.querySelector('td[data-col="문제"]');
             return {
-                links: [...cell.querySelectorAll('a')].map(a => ({
+                links: [...(cell?.querySelectorAll('a') || [])].map(a => ({
                     href: a.getAttribute('href'),
                     titles: [...a.querySelectorAll('.title')].map(e => e.innerText.trim()),
                     tiers: [...a.querySelectorAll('img')].map(e => e.getAttribute('src')),
-                    missingTier: !!a.querySelector('[title="난이도 미확인"]'),
+                    missingTier: a.querySelectorAll('[title="난이도 미확인"]').length,
                     unrated: a.matches('.pl-row-link') && !a.querySelector('.pl-card-tier') &&
-                             !a.querySelector('img') && !!a.querySelector('.title')
+                             !a.querySelector('img') && !a.querySelector('[title="난이도 미확인"]') && !!a.querySelector('.title')
                 })),
                 rates: [...r.querySelectorAll('td[data-col="정답률"]')].map(e => e.innerText.trim()),
+                accepted: [...r.querySelectorAll('td[data-col="정답"]')].map(e => e.innerText.trim()),
                 rateLinks: [...r.querySelectorAll('td[data-col="정답률"] a')].map(a=>a.getAttribute('href')),
                 regular: !!r.querySelector('[aria-label="일반 문제"]')
             };
@@ -105,7 +105,6 @@ class JungolSource:
             self._context.on("requestfailed", self._request_failed)
             self._context.on("response", self._response)
             self._list_page = self._context.new_page()
-            self._detail_page = self._context.new_page()
             return self
         except BaseException as error:
             self.__exit__(type(error), error, error.__traceback__)
@@ -170,7 +169,8 @@ class JungolSource:
             raise SourceAccessError(f"정올 탐색 실패: {error}") from error
         if response is None or response.status >= 400:
             raise SourceAccessError(f"정올 탐색 실패: HTTP {response.status if response else '응답 없음'}")
-        if urlsplit(page.url).hostname != "jungol.co.kr" or urlsplit(page.url).path.startswith('/auth/'):
+        actual = urlsplit(page.url)
+        if (actual.scheme, actual.netloc) != ('https','jungol.co.kr') or actual.path.startswith('/auth/'):
             raise SourceAccessError("로그인 또는 다른 사이트로 이동했습니다.")
 
     def _check_access(self, snapshot: dict) -> None:
@@ -190,23 +190,33 @@ class JungolSource:
             snapshot = self._list_page.evaluate(_SNAPSHOT)
             self._check_access(snapshot)
             if not snapshot['busy'] and not snapshot['moreDisabled'] and not self._pending:
-                ready = snapshot['rows'] and all(row['rates'] and row['regular'] for row in snapshot['rows'])
+                ready = snapshot['rows'] and all(row['rates'] and row['accepted'] and
+                    all(row['accepted']) and row['regular'] for row in snapshot['rows'])
                 if (ready or snapshot['empty']) and snapshot == last_snapshot:
                     if previous is None:
                         return snapshot
-                    ids = {self._candidate(row).id for row in snapshot['rows']}
+                    ids = {self._problem(row).id for row in snapshot['rows']}
                     # A temporarily removed button does not prove an empty final load.
                     completed_load = request_checkpoint is not None and self._completed_requests > request_checkpoint
                     if ids - previous or (completed_load and not snapshot['more'] and not snapshot['next']):
                         return snapshot
             if time.monotonic() >= deadline:
+                if previous is None and not snapshot['busy'] and not self._pending:
+                    for row in snapshot['rows']:
+                        self._problem(row)
                 error = SourceSchemaError if previous is None else SourceCompletenessError
                 raise error("목록 준비 시간 초과 또는 추가 로드 진행 없음. DOM 구조와 접속 상태를 확인하세요.")
             last_snapshot = snapshot
             self._list_page.wait_for_timeout(50)
 
-    def _candidate(self, row: dict) -> Candidate:
+    def _problem(self, row: dict) -> Problem:
+        identity = f"번호 확인 실패, 원시 링크 {row['links']!r}"
         try:
+            if len(row['links']) == 1:
+                raw = row['links'][0]['href']
+                number = re.fullmatch(r'/problem/([1-9][0-9]*)', raw or '')
+                if number:
+                    identity = f"문제 {number[1]}"
             if len(row['links']) != 1 or len(row['rates']) != 1 or not row['regular']:
                 raise ValueError("문제 링크/정답률 열/일반 문제 표시가 없거나 중복됩니다.")
             link = row['links'][0]
@@ -214,18 +224,22 @@ class JungolSource:
             match = re.fullmatch(r"https://jungol\.co\.kr/problem/([1-9]\d*)", url)
             if not match or len(link['titles']) != 1:
                 raise ValueError("제목 또는 문제 URL 구조가 달라졌습니다.")
+            if link['missingTier'] and link['tiers']:
+                raise ValueError(f"티어 표시 중복: {link['tiers']!r}, 미확인 {link['missingTier']}개")
             if len(link['tiers']) == 1:
                 badge = re.search(r"/solved/(\d+)\.svg(?:\?|$)", link['tiers'][0])
                 if not badge:
-                    raise ValueError("알 수 없는 티어 배지입니다.")
+                    raise ValueError(f"알 수 없는 티어 배지: {link['tiers']!r}")
                 tier_value = int(badge[1])
+                if not 0 <= tier_value <= 30:
+                    raise ValueError(f"티어 배지 범위 오류: {link['tiers']!r}")
                 tier = Unrated() if tier_value == 0 else Rated(tier_value)
-            elif not link['tiers'] and link['missingTier']:
+            elif not link['tiers'] and link['missingTier'] == 1:
                 tier = Unavailable()
             elif link['unrated']:
                 tier = Unrated()
             else:
-                raise ValueError("티어 배지가 없거나 중복됩니다.")
+                raise ValueError(f"티어 배지가 누락되거나 중복됩니다: {link['tiers']!r}")
             text = row['rates'][0]
             if text in _EMPTY or (text == '' and row['rateLinks'] == [link['href']]):
                 rate = Unavailable()
@@ -233,10 +247,19 @@ class JungolSource:
                 rate = Known(Decimal(text[:-1]))
             else:
                 raise ValueError(f"알 수 없는 정답률 표현: {text}")
-            return Candidate(id=int(match[1]), title=link['titles'][0], url=url,
-                             tier=tier, pass_rate=rate, listed_at=now())
+            if len(row['accepted']) != 1:
+                raise ValueError(f"정답 제출 수 열 누락/중복: {row['accepted']!r}")
+            text = row['accepted'][0]
+            if text in _EMPTY:
+                accepted = Unavailable()
+            elif re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)', text):
+                accepted = Known(int(text.replace(',', '')))
+            else:
+                raise ValueError(f"알 수 없는 정답 제출 수: {text!r}")
+            return Problem(id=int(match[1]), title=link['titles'][0], url=url,
+                           tier=tier, pass_rate=rate, accepted_count=accepted, listed_at=now())
         except (ValueError, InvalidOperation) as error:
-            raise SourceSchemaError(str(error)) from error
+            raise SourceSchemaError(f"{identity}: {error}") from error
 
     def resolve_user(self, handle: str) -> UserReference:
         self._report(f"공개 사용자 @{handle} 확인 중 · Ctrl+C 취소")
@@ -363,25 +386,32 @@ class JungolSource:
             params.update(solvedBy=str(user.account_id),
                           solvedByMode='include' if criteria.status == Status.SOLVED else 'exclude')
         self._goto(self._list_page, _ORIGIN + '/problem?' + urlencode(params))
-        candidates: dict[int, Candidate] = {}
+        candidates: dict[int, Problem] = {}
         visited: set[str] = set()
         snapshot = self._wait_listing()
-        self._verify_filters(criteria, user)
-        snapshot = self._wait_listing()
         while True:
-            actual = parse_qs(urlsplit(self._list_page.url).query)
-            if any(actual.get(key) != [value] for key, value in params.items()):
+            location = urlsplit(self._list_page.url)
+            if (location.scheme,location.netloc,location.path) != ('https','jungol.co.kr','/problem'):
+                raise SourceAccessError("문제 목록이 다른 origin 또는 경로로 이동했습니다.")
+            actual = parse_qs(location.query, keep_blank_values=True)
+            filter_keys = {'type','sort','unrated','minTier','maxTier','solvedBy','solvedByMode'}
+            if (any(actual.get(key) != [value] for key, value in params.items()) or
+                    any(key in actual and key not in params for key in filter_keys) or 'status' in actual):
                 raise SourceAccessError("요청한 목록 필터가 적용되지 않았습니다.")
+            self._verify_filters(criteria, user)
+            snapshot = self._wait_listing()
             if snapshot['tableCount'] != 1 and not snapshot['empty']:
                 raise SourceSchemaError("문제/정답률 헤더가 있는 목록 표를 식별할 수 없습니다.")
             for row in snapshot['rows']:
-                candidate = self._candidate(row)
-                if params['unrated'] == 'exclude' and (
-                    not isinstance(candidate.tier, Rated)
-                    or (criteria.min_tier is not None and candidate.tier.value < criteria.min_tier)
+                candidate = self._problem(row)
+                if isinstance(candidate.tier, Rated) and (
+                    (criteria.min_tier is not None and candidate.tier.value < criteria.min_tier)
                     or (criteria.max_tier is not None and candidate.tier.value > criteria.max_tier)
                 ):
-                    raise SourceAccessError("목록 티어 필터가 적용되지 않았습니다.")
+                    lower = criteria.min_tier if criteria.min_tier is not None else '제한 없음'
+                    upper = criteria.max_tier if criteria.max_tier is not None else '제한 없음'
+                    raise SourceAccessError(f"문제 {candidate.id}: 확정 티어 {candidate.tier.value}, "
+                                            f"요청 범위 하한 {lower}, 상한 {upper}; 목록 티어 필터 미적용")
                 candidates.setdefault(candidate.id, candidate)
             self._report(f"Collecting · 수집 {len(candidates)}개 · Ctrl+C 취소")
             if len(snapshot['next']) > 1 or snapshot['more'] > 1 or (snapshot['next'] and snapshot['more']):
@@ -389,14 +419,15 @@ class JungolSource:
             if snapshot['next']:
                 visited.add(self._list_page.url)
                 next_url = urljoin(self._list_page.url, snapshot['next'][0])
-                if urlsplit(next_url).hostname != 'jungol.co.kr' or urlsplit(next_url).path != '/problem':
+                next_location = urlsplit(next_url)
+                if (next_location.scheme,next_location.netloc,next_location.path) != ('https','jungol.co.kr','/problem'):
                     raise SourceSchemaError("다음 페이지 URL이 정올 문제 목록이 아닙니다.")
                 if next_url in visited:
                     raise SourceCompletenessError("같은 목록 페이지가 반복됩니다.")
                 previous = set(candidates)
                 self._goto(self._list_page, next_url)
                 snapshot = self._wait_listing()
-                if not {self._candidate(row).id for row in snapshot['rows']} - previous:
+                if not {self._problem(row).id for row in snapshot['rows']} - previous:
                     raise SourceCompletenessError("다음 페이지에 새 문제가 없습니다.")
             elif snapshot['more']:
                 previous = set(candidates)
@@ -431,52 +462,3 @@ class JungolSource:
             button.click()
         except Error as error:
             raise SourceSchemaError(f"목록 필터 UI 확인 실패: {error}") from error
-
-    def read_details(self, candidate: Candidate) -> Problem:
-        page = self._detail_page
-        self._goto(page, candidate.url)
-        try:
-            stat = self._wait_detail_stat()
-            identity = page.locator('article').first.get_by_role('link', name='문제', exact=True).evaluate_all(
-                "els => els.map(e=>e.getAttribute('href'))")
-            tab_urls = [urlsplit(urljoin(_ORIGIN, href)) for href in identity]
-            actual_url = urlsplit(page.url)
-            if (actual_url.scheme, actual_url.netloc, actual_url.path) != (
-                'https', 'jungol.co.kr', f'/problem/{candidate.id}'
-            ) or len(tab_urls) != 1 or (
-                tab_urls[0].scheme, tab_urls[0].netloc, tab_urls[0].path
-            ) != ('https', 'jungol.co.kr', f'/problem/{candidate.id}'):
-                raise SourceSchemaError(f"상세 문제 번호 불일치: 요청 {candidate.id}, URL {page.url}, 문제 탭 {identity}")
-            text = stat['text']
-            if text in _EMPTY or (text == '' and stat['numbers'] == 1):
-                solvers = Unavailable()
-            elif re.fullmatch(r'(?:\d+|\d{1,3}(?:,\d{3})+)', text):
-                solvers = Known(int(text.replace(',', '')))
-            else:
-                raise SourceSchemaError(f"알 수 없는 맞힌 사람 통계: {text}")
-            return Problem(id=candidate.id, title=candidate.title, url=candidate.url,
-                           tier=candidate.tier, pass_rate=candidate.pass_rate, listed_at=candidate.listed_at,
-                           solver_count=solvers, details_observed_at=now())
-        except Error as error:
-            raise SourceAccessError(f"상세 브라우저 작업 실패: {error}") from error
-
-    def _wait_detail_stat(self) -> dict:
-        page = self._detail_page
-        header = page.locator('article main').filter(has=page.locator('h1')).first
-        deadline = time.monotonic() + self._dom_timeout / 1000
-        last_stats = None
-        while True:
-            snapshot = page.evaluate(_SNAPSHOT)
-            self._check_access(snapshot)
-            stats = header.locator('[title="맞힌 사람"]').evaluate_all("""els => els.map(e => ({
-                text:e.innerText.trim(), numbers:e.querySelectorAll('span.num').length
-            }))""")
-            ready = not snapshot['busy'] and not self._pending
-            if ready and stats and stats == last_stats:
-                if len(stats) != 1:
-                    raise SourceSchemaError("맞힌 사람 통계가 중복됩니다.")
-                return stats[0]
-            if time.monotonic() >= deadline:
-                raise SourceSchemaError("상세 통계 준비 시간 초과 또는 DOM 구조 변경입니다.")
-            last_stats = stats if ready else None
-            page.wait_for_timeout(50)

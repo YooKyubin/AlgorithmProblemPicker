@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from .models import Candidate, CompletedListing, Problem, SearchCriteria, UserReference
+from .models import CompletedListing, SearchCriteria, UserReference
 
 
 class SourceError(Exception):
@@ -29,5 +29,3 @@ class ProblemSource(Protocol):
     def resolve_user(self, handle: str) -> UserReference: ...
 
     def collect(self, criteria: SearchCriteria, user: UserReference | None) -> CompletedListing: ...
-
-    def read_details(self, candidate: Candidate) -> Problem: ...

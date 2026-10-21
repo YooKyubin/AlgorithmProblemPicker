@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import datetime
 
 import pytest
 
@@ -9,18 +10,16 @@ from algorithm_problem_picker import selection
 def test_inclusive_decimal_filters_and_unknowns(problem):
     problems = [problem(), problem(1001, rate=Known(Decimal("47.449"))),
                 problem(1002, rate=Unavailable()), problem(1003, tier=Unrated()),
-                problem(1004, tier=Unavailable()), problem(1005, solvers=Known(0))]
+                problem(1004, tier=Unavailable()), problem(1005, accepted=Known(0))]
     criteria = SearchCriteria(min_tier=1, max_tier=1, min_rate=Decimal("47.45"),
-                              max_rate=Decimal("47.45"), min_solvers=10, max_solvers=10)
-    cheap, omitted = selection.filter_listing(problems, criteria)
-    result, solver_omitted = selection.filter_solvers(cheap, criteria)
+                              max_rate=Decimal("47.45"), min_accepted=10, max_accepted=10)
+    result, omitted = selection.filter_listing(problems, criteria)
     assert [p.id for p in result] == [1000]
     assert omitted == 2  # missing rate and missing tier, not the explicit Unrated
-    assert solver_omitted == 0
     assert len(selection.filter_listing(problems, SearchCriteria())[0]) == 6
-    assert selection.filter_solvers([problems[-1]], SearchCriteria(max_solvers=0))[0]
-    assert selection.filter_solvers([problem(solvers=Unavailable())],
-                                    SearchCriteria(min_solvers=0))[1] == 1
+    assert selection.filter_listing([problems[-1]], SearchCriteria(max_accepted=0))[0]
+    assert selection.filter_listing([problem(accepted=Unavailable())],
+                                    SearchCriteria(min_accepted=0))[1] == 1
 
 
 def test_default_id_order_and_one_sided_bounds(problem):
@@ -32,8 +31,8 @@ def test_default_id_order_and_one_sided_bounds(problem):
 
 @pytest.mark.parametrize('kwargs', [dict(min_tier=0), dict(max_tier=31),
     dict(min_rate=Decimal('NaN')), dict(max_rate=Decimal('Infinity')),
-    dict(min_rate=Decimal('-1')), dict(min_solvers=-1), dict(min_tier=3, max_tier=2),
-    dict(min_solvers=3, max_solvers=2), dict(status='solved'), dict(user_handle='someone')])
+    dict(min_rate=Decimal('-1')), dict(min_accepted=-1), dict(min_tier=3, max_tier=2),
+    dict(min_accepted=3, max_accepted=2), dict(status='solved'), dict(user_handle='someone')])
 def test_invalid_criteria(kwargs):
     with pytest.raises(ValueError):
         SearchCriteria(**kwargs)
@@ -53,14 +52,14 @@ def test_recommend_entire_unique_population(problem, monkeypatch, requested, siz
     assert len({p.id for p in result}) == len(result)
 
 
-@pytest.mark.parametrize('sort', ['difficulty','rate','solvers'])
+@pytest.mark.parametrize('sort', ['difficulty','rate','accepted'])
 @pytest.mark.parametrize('order,expected', [('asc',[1000,1001,1002,1003,1004]),
                                           ('desc',[1002,1000,1001,1003,1004])])
 def test_metric_order_ties_and_missing_last(problem, sort, order, expected):
     low = [problem(1001), problem(1000)]
-    high = problem(1002, tier=Rated(5), rate=Known(Decimal('90')), solvers=Known(30))
-    missing = [problem(1004, tier=Unavailable(), rate=Unavailable(), solvers=Unavailable()),
-               problem(1003, tier=Unrated(), rate=Unavailable(), solvers=Unavailable())]
+    high = problem(1002, tier=Rated(5), rate=Known(Decimal('90')), accepted=Known(30))
+    missing = [problem(1004, tier=Unavailable(), rate=Unavailable(), accepted=Unavailable()),
+               problem(1003, tier=Unrated(), rate=Unavailable(), accepted=Unavailable())]
     assert [p.id for p in selection.sort_problems(low + [high] + missing, sort, order)] == expected
 
 
@@ -73,3 +72,55 @@ def test_id_desc_and_shuffle_entire_population(problem, monkeypatch):
     monkeypatch.setattr('random.shuffle', shuffle)
     shuffled = selection.sort_problems(items, 'random')
     assert shuffled[0].id == 1024 and {p.id for p in shuffled} == {p.id for p in items}
+
+
+@pytest.mark.parametrize('bounds', [{}, dict(min_tier=9), dict(max_tier=14), dict(min_tier=9,max_tier=14)])
+def test_three_tier_states_and_unique_unknown_count(problem, bounds):
+    items = [problem(tier=Rated(9)), problem(1001,tier=Unrated()),
+             problem(1002,tier=Unavailable(),rate=Unavailable())]
+    eligible, omitted = selection.filter_listing(items, SearchCriteria(**bounds))
+    assert [p.id for p in eligible] == ([1000] if bounds else [1000,1001,1002])
+    assert omitted == (1 if bounds else 0)
+    assert selection.filter_listing(items[1:],SearchCriteria(min_tier=9)) == ([],1)
+
+
+@pytest.mark.parametrize('bounds,expected', [(dict(min_accepted=10,max_accepted=20),[10,20]),
+    (dict(min_accepted=10),[10,20,21]),(dict(max_accepted=10),[0,9,10]),
+    (dict(min_accepted=0,max_accepted=0),[0]),({},[0,9,10,20,21,None])])
+def test_accepted_bounds(problem, bounds, expected):
+    values = [0,9,10,20,21,None]
+    items = [problem(1000+i,accepted=Unavailable() if value is None else Known(value)) for i,value in enumerate(values)]
+    selected, omitted = selection.filter_listing(items,SearchCriteria(**bounds))
+    assert [None if isinstance(p.accepted_count,Unavailable) else p.accepted_count.value for p in selected] == expected
+    assert omitted == bool(bounds)
+
+
+def test_unknown_count_stops_at_first_active_filter(problem):
+    items = [problem(tier=Rated(1),rate=Unavailable(),accepted=Unavailable()),
+             problem(1001,tier=Unavailable(),rate=Unavailable(),accepted=Unavailable()),
+             problem(1002,tier=Unrated(),rate=Unavailable(),accepted=Unavailable()),
+             problem(1003,tier=Rated(9),rate=Unavailable(),accepted=Unavailable())]
+    assert selection.filter_listing(items+items[:1],SearchCriteria(min_tier=9,min_rate=Decimal('0'),min_accepted=0)) == ([],2)
+
+
+@pytest.mark.parametrize('value', [-1,1.5,True])
+@pytest.mark.parametrize('field', ['min_accepted','max_accepted'])
+def test_invalid_accepted_boundary(field, value):
+    with pytest.raises(ValueError):
+        SearchCriteria(**{field:value})
+
+
+@pytest.mark.parametrize('changes', [dict(id=True),dict(id=0),dict(title='  '),dict(url='https://jungol.co.kr/problem/99'),
+    dict(tier=Known(9)),dict(pass_rate=Known(Decimal('NaN'))),dict(pass_rate=Known(Decimal('101'))),
+    dict(accepted_count=Known(True)),dict(accepted_count=Known(-1)),dict(accepted_count=Known(1.5)),
+    dict(listed_at=datetime(2026,10,21))])
+def test_problem_validation_preserves_domain_invariants(problem, changes):
+    from dataclasses import replace
+    with pytest.raises(ValueError):
+        replace(problem(),**changes)
+
+
+@pytest.mark.parametrize('value',[True,0,31,1.5])
+def test_rated_requires_integer_1_to_30(value):
+    with pytest.raises(ValueError):
+        Rated(value)

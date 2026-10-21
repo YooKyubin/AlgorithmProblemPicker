@@ -40,12 +40,13 @@ class Rated:
 
 
 @dataclass(frozen=True, kw_only=True)
-class Candidate:
+class Problem:
     id: int
     title: str
     url: str
     tier: Rated | Unrated | Unavailable
     pass_rate: Known[Decimal] | Unavailable
+    accepted_count: Known[int] | Unavailable
     listed_at: datetime
 
     def __post_init__(self) -> None:
@@ -63,23 +64,13 @@ class Candidate:
                 raise ValueError("정답률은 유한 Decimal 0~100이어야 합니다.")
         elif not isinstance(self.pass_rate, Unavailable):
             raise ValueError("알 수 없는 정답률 상태입니다.")
-        _aware(self.listed_at)
-
-
-@dataclass(frozen=True, kw_only=True)
-class Problem(Candidate):
-    solver_count: Known[int] | Unavailable
-    details_observed_at: datetime
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if isinstance(self.solver_count, Known):
-            count = self.solver_count.value
+        if isinstance(self.accepted_count, Known):
+            count = self.accepted_count.value
             if type(count) is not int or count < 0:
-                raise ValueError("푼 사람 수는 0 이상의 정수여야 합니다.")
-        elif not isinstance(self.solver_count, Unavailable):
-            raise ValueError("알 수 없는 푼 사람 수 상태입니다.")
-        _aware(self.details_observed_at)
+                raise ValueError("정답 제출 수는 0 이상의 정수여야 합니다.")
+        elif not isinstance(self.accepted_count, Unavailable):
+            raise ValueError("알 수 없는 정답 제출 수 상태입니다.")
+        _aware(self.listed_at)
 
 
 class Status(StrEnum):
@@ -92,7 +83,7 @@ class SortKey(StrEnum):
     ID = "id"
     DIFFICULTY = "difficulty"
     RATE = "rate"
-    SOLVERS = "solvers"
+    ACCEPTED = "accepted"
     RANDOM = "random"
 
 
@@ -107,8 +98,8 @@ class SearchCriteria:
     max_tier: int | None = None
     min_rate: Decimal | None = None
     max_rate: Decimal | None = None
-    min_solvers: int | None = None
-    max_solvers: int | None = None
+    min_accepted: int | None = None
+    max_accepted: int | None = None
     status: Status = Status.ALL
     user_handle: str = ""
 
@@ -127,11 +118,11 @@ class SearchCriteria:
                 not isinstance(value, Decimal) or not value.is_finite() or not 0 <= value <= 100
             ):
                 raise ValueError("정답률은 유한 소수 0~100이어야 합니다.")
-        for name in ("min_solvers", "max_solvers"):
+        for name in ("min_accepted", "max_accepted"):
             value = getattr(self, name)
             if value is not None and (type(value) is not int or value < 0):
-                raise ValueError("푼 사람 수는 0 이상의 정수여야 합니다.")
-        for metric in ("tier", "rate", "solvers"):
+                raise ValueError("정답 제출 수는 0 이상의 정수여야 합니다.")
+        for metric in ("tier", "rate", "accepted"):
             lower, upper = getattr(self, f"min_{metric}"), getattr(self, f"max_{metric}")
             if lower is not None and upper is not None and lower > upper:
                 raise ValueError(f"{metric}: 하한은 상한 이하여야 합니다.")
@@ -157,11 +148,11 @@ class UserReference:
 class CompletedListing:
     """Created by a provider only after the last page has finished successfully."""
 
-    candidates: tuple[Candidate, ...]
+    candidates: tuple[Problem, ...]
     completed_at: datetime = field(default_factory=now)
 
     def __post_init__(self) -> None:
-        first: dict[int, Candidate] = {}
+        first: dict[int, Problem] = {}
         for candidate in self.candidates:
             first.setdefault(candidate.id, candidate)
         object.__setattr__(self, "candidates", tuple(first.values()))
@@ -172,9 +163,8 @@ class Stage(StrEnum):
     VALIDATED = "Validated"
     USER_RESOLVED = "UserResolved"
     COLLECTING = "Collecting"
-    ENRICHING = "Enriching"
+    PROCESSING = "Processing"
     COMPLETE = "Complete"
-    PRESENTED = "Presented"
     FAILED = "Failed"
     CANCELLED = "Cancelled"
 
@@ -183,19 +173,17 @@ class Stage(StrEnum):
 class Progress:
     stage: Stage = Stage.VALIDATED
     collected: int = 0
-    detailed: int = 0
 
     def advance(self, stage: Stage) -> None:
         allowed = {
             Stage.VALIDATED: {Stage.USER_RESOLVED, Stage.COLLECTING},
             Stage.USER_RESOLVED: {Stage.COLLECTING},
-            Stage.COLLECTING: {Stage.ENRICHING},
-            Stage.ENRICHING: {Stage.COMPLETE},
-            Stage.COMPLETE: {Stage.PRESENTED},
+            Stage.COLLECTING: {Stage.PROCESSING},
+            Stage.PROCESSING: {Stage.COMPLETE},
         }
         assert stage in allowed.get(self.stage, set()) or (
             stage in {Stage.FAILED, Stage.CANCELLED}
-            and self.stage not in {Stage.PRESENTED, Stage.FAILED, Stage.CANCELLED}
+            and self.stage not in {Stage.COMPLETE, Stage.FAILED, Stage.CANCELLED}
         ), f"Invalid progress transition: {self.stage} → {stage}"
         self.stage = stage
 
@@ -223,3 +211,7 @@ class Result:
         assert self.finished_at >= self.started_at
         assert self.fetched_count >= self.eligible_count >= self.returned_count
         assert len({problem.id for problem in self.problems}) == self.returned_count
+        assert self.requested_count > 0
+        assert self.returned_count == min(self.requested_count, self.eligible_count)
+        assert 0 <= self.omitted_unknown_count <= self.fetched_count - self.eligible_count
+        assert self.shortage in {0, self.requested_count - self.returned_count}

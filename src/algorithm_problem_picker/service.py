@@ -1,10 +1,10 @@
-"""Complete collection and enrichment before presenting any result."""
+"""Complete listing collection before filtering and selecting results."""
 
 from collections.abc import Callable
 
 from .models import Order, Progress, Result, SearchCriteria, SortKey, Stage, now
 from .ports import ProblemSource
-from .selection import filter_listing, filter_solvers, recommend, sort_problems
+from .selection import filter_listing, recommend, sort_problems
 
 
 class Picker:
@@ -37,27 +37,18 @@ class Picker:
             self.report(progress)
             listing = self.source.collect(criteria, user)
             progress.collected = len(listing.candidates)
-            progress.advance(Stage.ENRICHING)
+            progress.advance(Stage.PROCESSING)
             self.report(progress)
-            candidates, omitted = filter_listing(listing.candidates, criteria)
-            problems = []
-            for candidate in candidates:
-                problem = self.source.read_details(candidate)
-                assert (problem.id, problem.title, problem.url, problem.tier, problem.pass_rate,
-                        problem.listed_at) == (candidate.id, candidate.title, candidate.url,
-                        candidate.tier, candidate.pass_rate, candidate.listed_at)
-                problems.append(problem)
-                progress.detailed += 1
-                self.report(progress)
-            eligible, solver_omitted = filter_solvers(problems, criteria)
-            progress.advance(Stage.COMPLETE)
-            self.report(progress)
+            eligible, omitted = filter_listing(listing.candidates, criteria)
             selected = recommend(eligible, requested) if random_selection else sort_problems(eligible, sort, order)[:requested]
-            return Result(criteria=criteria, user=user, problems=tuple(selected),
+            result = Result(criteria=criteria, user=user, problems=tuple(selected),
                           fetched_count=progress.collected, eligible_count=len(eligible),
-                          omitted_unknown_count=omitted + solver_omitted, started_at=started_at,
+                          omitted_unknown_count=omitted, started_at=started_at,
                           finished_at=now(), requested_count=requested,
                           shortage=max(0, requested - len(selected)) if random_selection else 0)
+            progress.advance(Stage.COMPLETE)
+            self.report(progress)
+            return result
         except KeyboardInterrupt:
             progress.advance(Stage.CANCELLED)
             self.report(progress)

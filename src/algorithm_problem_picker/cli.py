@@ -21,9 +21,23 @@ err = Console(stderr=True, highlight=False, markup=False)
 
 TierOption = Annotated[int | None, typer.Option(min=1, max=30, help="티어 1=Bronze V ~ 30=Ruby I (포함)")]
 RateOption = Annotated[str | None, typer.Option(help="정답률 0~100 소수, % 없이 (포함)")]
-SolversOption = Annotated[int | None, typer.Option(min=0, help="푼 사람 수 (포함)")]
+AcceptedOption = Annotated[int | None, typer.Option(min=0, help="정답 제출 수, 동일 사용자의 중복 정답 제출 포함 (경계 포함)")]
 StatusOption = Annotated[Status, typer.Option(help="공개 기준 사용자 풀이 여부")]
 UserOption = Annotated[str, typer.Option("--user", help="정확한 공개 핸들. @ 접두사 허용")]
+
+
+def _reject_legacy(value: str | None, replacement: str) -> None:
+    if value is not None:
+        raise typer.BadParameter(f"{replacement}를 사용하세요. 맞힌 사람 수에서 정답 제출 수로 변경되었습니다. "
+                                 "동일 사용자의 중복 정답 제출을 포함하므로 같은 숫자라도 결과가 달라질 수 있습니다.")
+
+
+def _reject_min_solvers(value: str | None) -> None:
+    _reject_legacy(value, '--min-accepted')
+
+
+def _reject_max_solvers(value: str | None) -> None:
+    _reject_legacy(value, '--max-accepted')
 
 
 @app.callback()
@@ -33,18 +47,18 @@ def main(show_version: bool = typer.Option(False, "--version", is_eager=True)) -
         raise typer.Exit()
 
 
-def _criteria(min_tier, max_tier, min_rate, max_rate, min_solvers, max_solvers, status, user) -> SearchCriteria:
+def _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user) -> SearchCriteria:
     try:
         return SearchCriteria(min_tier, max_tier,
                               Decimal(min_rate) if min_rate is not None else None,
                               Decimal(max_rate) if max_rate is not None else None,
-                              min_solvers, max_solvers, status, user)
+                              min_accepted, max_accepted, status, user)
     except (ValueError, InvalidOperation) as error:
         raise typer.BadParameter(str(error)) from error
 
 
 def _progress(progress: Progress) -> None:
-    err.print(f"{progress.stage} · 수집 {progress.collected} · 상세 {progress.detailed} · Ctrl+C 취소")
+    err.print(f"{progress.stage} · 수집 {progress.collected} · Ctrl+C 취소")
 
 
 def _metric(value, suffix="") -> str:
@@ -52,7 +66,7 @@ def _metric(value, suffix="") -> str:
 
 
 def _present(result: Result, recommend: bool = False) -> None:
-    table = Table("번호", "제목", "난이도", "정답률", "푼 사람 수", "링크", box=None, min_width=115)
+    table = Table("번호", "제목", "난이도", "정답률", "정답 제출 수", "링크", box=None, min_width=115)
     table.columns[-1].no_wrap = True
     table.columns[-1].overflow = 'ignore'
     table.columns[1].overflow = 'fold'
@@ -60,13 +74,13 @@ def _present(result: Result, recommend: bool = False) -> None:
         tier = str(problem.tier.value) if isinstance(problem.tier, Rated) else (
             "미정" if isinstance(problem.tier, Unrated) else "미확인")
         table.add_row(str(problem.id), problem.title, tier, _metric(problem.pass_rate, "%"),
-                      _metric(problem.solver_count), problem.url)
+                      _metric(problem.accepted_count), problem.url)
     if result.problems:
         out.print(table, soft_wrap=True)
     else:
         out.print("조건에 맞는 문제가 없습니다.")
     conditions = []
-    for name in ("min_tier", "max_tier", "min_rate", "max_rate", "min_solvers", "max_solvers"):
+    for name in ("min_tier", "max_tier", "min_rate", "max_rate", "min_accepted", "max_accepted"):
         value = getattr(result.criteria, name)
         if value is not None:
             conditions.append(f"{name}={value}")
@@ -79,7 +93,7 @@ def _present(result: Result, recommend: bool = False) -> None:
     if recommend:
         out.print(f"부족 {result.shortage}개")
     out.print(f"조회 시각: {result.started_at.astimezone().isoformat()} ~ {result.finished_at.astimezone().isoformat()}")
-    out.print("티어·정답률은 목록 관측값, 푼 사람 수는 각 상세 조회 시점의 값입니다.")
+    out.print("티어·정답률·정답 제출 수는 각 목록 관측 시점의 값입니다. 정답 제출 수는 동일 사용자의 중복 정답 제출을 포함합니다.")
     if result.omitted_unknown_count:
         err.print(f"필터 지표 미제공으로 {result.omitted_unknown_count}개 제외")
 
@@ -105,27 +119,36 @@ def _run(criteria: SearchCriteria, requested: int, recommend: bool = False,
 def list_command(
     min_tier: TierOption = None, max_tier: TierOption = None,
     min_rate: RateOption = None, max_rate: RateOption = None,
-    min_solvers: SolversOption = None, max_solvers: SolversOption = None,
+    min_accepted: AcceptedOption = None, max_accepted: AcceptedOption = None,
+    min_solvers: Annotated[str | None, typer.Option(hidden=True, is_eager=True, callback=_reject_min_solvers)] = None,
+    max_solvers: Annotated[str | None, typer.Option(hidden=True, is_eager=True, callback=_reject_max_solvers)] = None,
     status: StatusOption = Status.ALL, user: UserOption = "",
-    sort: Annotated[SortKey, typer.Option(help="전체 적격 후보 정렬 기준")] = SortKey.ID,
+    sort: Annotated[str, typer.Option(help="전체 적격 후보 정렬: id, difficulty, rate, accepted, random")] = 'id',
     order: Annotated[Order, typer.Option(help="정렬 방향. 지표 동점은 번호 오름차순")] = Order.ASC,
     limit: Annotated[int, typer.Option(min=1, help="전체 필터 후 표시 개수")] = 20,
 ) -> None:
-    criteria = _criteria(min_tier, max_tier, min_rate, max_rate, min_solvers, max_solvers, status, user)
-    if sort == SortKey.RANDOM and order == Order.DESC:
+    _reject_legacy('solvers' if sort == 'solvers' else None, '--sort accepted')
+    try:
+        sort_key = SortKey(sort)
+    except ValueError as error:
+        raise typer.BadParameter('정렬 기준: id, difficulty, rate, accepted, random', param_hint='--sort') from error
+    criteria = _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user)
+    if sort_key == SortKey.RANDOM and order == Order.DESC:
         raise typer.BadParameter("random과 --order desc를 함께 지정할 수 없습니다.")
-    _run(criteria, limit, sort=sort, order=order)
+    _run(criteria, limit, sort=sort_key, order=order)
 
 
 @app.command(help="전체 적격 후보에서 중복 없이 추천. 티어 1=Bronze V ~ 30=Ruby I.")
 def recommend(
     min_tier: TierOption = None, max_tier: TierOption = None,
     min_rate: RateOption = None, max_rate: RateOption = None,
-    min_solvers: SolversOption = None, max_solvers: SolversOption = None,
+    min_accepted: AcceptedOption = None, max_accepted: AcceptedOption = None,
+    min_solvers: Annotated[str | None, typer.Option(hidden=True, is_eager=True, callback=_reject_min_solvers)] = None,
+    max_solvers: Annotated[str | None, typer.Option(hidden=True, is_eager=True, callback=_reject_max_solvers)] = None,
     status: StatusOption = Status.ALL, user: UserOption = "",
     count: Annotated[int, typer.Option(min=1, help="추천 개수")] = 1,
 ) -> None:
-    criteria = _criteria(min_tier, max_tier, min_rate, max_rate, min_solvers, max_solvers, status, user)
+    criteria = _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user)
     _run(criteria, count, recommend=True)
 
 

@@ -14,7 +14,7 @@ def source_factory(monkeypatch):
 
     class Source:
         def __init__(self, report):
-            pass
+            calls.append('constructed')
 
         def __enter__(self):
             calls.append('started')
@@ -35,8 +35,8 @@ def source_factory(monkeypatch):
 @pytest.mark.parametrize('args', [
     ['--limit','0'], ['--min-rate','NaN'], ['--max-rate','Infinity'],
     ['--min-rate','80','--max-rate','20'], ['--min-tier','31'],
-    ['--min-solvers','-1'], ['--status','unsolved'], ['--user','Name'],
-    ['--limit','1.2'], ['--min-solvers','20','--max-solvers','10'], ['--user','@']])
+    ['--min-accepted','-1'], ['--status','unsolved'], ['--user','Name'],
+    ['--limit','1.2'], ['--min-accepted','20','--max-accepted','10'], ['--user','@']])
 def test_invalid_list_before_browser(args, source_factory):
     _, calls = source_factory
     assert runner.invoke(cli.app, ['list', *args]).exit_code == 2
@@ -63,12 +63,12 @@ def test_common_filters_and_exact_user_reach_service(source_factory, monkeypatch
     monkeypatch.setattr(source, 'resolve_user', resolve, raising=False)
     result = runner.invoke(cli.app, ['list','--status','solved','--user','@Case',
         '--min-tier','1','--max-tier','30','--min-rate','47.45','--max-rate','50',
-        '--min-solvers','0','--max-solvers','100'])
+        '--min-accepted','0','--max-accepted','100'])
     assert result.exit_code == 0, result.exception
-    criteria = calls[1]
+    criteria = calls[2]
     assert criteria.min_rate == Decimal('47.45') and criteria.max_rate == Decimal('50')
     assert criteria.min_tier == 1 and criteria.max_tier == 30
-    assert criteria.min_solvers == 0 and criteria.max_solvers == 100
+    assert criteria.min_accepted == 0 and criteria.max_accepted == 100
     assert criteria.status == 'solved' and criteria.user_handle == 'Case'
     assert '@Case' in result.stdout
 
@@ -88,9 +88,60 @@ def test_list_failure_no_partial_output(error, code, source_factory, monkeypatch
 
 def test_help_and_version_do_not_start_source(source_factory):
     _, calls = source_factory
-    for args in (['--help'], ['--version'], ['list','--help']):
+    for args in (['--help'], ['--version'], ['list','--help'], ['recommend','--help']):
         assert runner.invoke(cli.app, args).exit_code == 0
     assert calls == []
+
+
+def test_accepted_output_and_processing(source_factory, monkeypatch, problem):
+    from algorithm_problem_picker.models import Known, Unavailable
+    source, _ = source_factory
+    monkeypatch.setattr(source,'collect',lambda *args:CompletedListing((problem(accepted=Known(0)),problem(1001,accepted=Unavailable()))))
+    result = runner.invoke(cli.app,['list','--sort','accepted'])
+    assert result.exit_code == 0, result.exception
+    assert '정답 제출 수' in result.stdout and '미확인' in result.stdout
+    assert '중복 정답 제출' in result.stdout and '목록 관측' in result.stdout
+    assert 'Processing' in result.stderr and '수집 2' in result.stderr
+    assert '상세' not in result.stderr
+    filtered = runner.invoke(cli.app,['recommend','--min-accepted','0','--max-accepted','0'])
+    assert filtered.exit_code == 0 and '적격 1' in filtered.stdout
+    assert 'min_accepted=0' in filtered.stdout and '정답 제출 수' in filtered.stdout
+
+
+@pytest.mark.parametrize('command', ['list','recommend'])
+@pytest.mark.parametrize('legacy,replacement', [('--min-solvers','--min-accepted'),('--max-solvers','--max-accepted')])
+@pytest.mark.parametrize('mixed', [False,True])
+def test_legacy_range_rejected_before_source(source_factory, command, legacy, replacement, mixed):
+    _, calls = source_factory
+    arguments = [command,legacy,'not-a-number']
+    if mixed:
+        arguments += ['--min-accepted','0']
+    result = runner.invoke(cli.app,arguments,terminal_width=180)
+    assert result.exit_code == 2 and not calls and not result.stdout
+    message = ' '.join(result.stderr.replace('│','').split())
+    assert replacement in message
+    assert '맞힌 사람 수' in message and '정답 제출 수' in message
+    assert '중복' in message and '달라질 수' in message
+    assert '조회 시작' not in result.stderr
+
+
+def test_legacy_sort_rejected_before_source(source_factory):
+    _, calls = source_factory
+    result = runner.invoke(cli.app,['list','--sort','solvers'],terminal_width=180)
+    assert result.exit_code == 2 and not calls and not result.stdout
+    message = ' '.join(result.stderr.replace('│','').split())
+    assert '--sort accepted' in message
+    assert '맞힌 사람 수' in message and '정답 제출 수' in message
+
+
+@pytest.mark.parametrize('command', ['list','recommend'])
+def test_help_only_exposes_accepted(source_factory, command):
+    _, calls = source_factory
+    result = runner.invoke(cli.app,[command,'--help'],terminal_width=180)
+    assert result.exit_code == 0 and not calls
+    assert '--min-accepted' in result.stdout and '--max-accepted' in result.stdout
+    assert '중복 정답 제출' in result.stdout
+    assert 'solvers' not in result.stdout
 
 
 def test_recommend_default_and_shortage(source_factory):
@@ -122,7 +173,7 @@ def test_random_desc_invalid_before_source(source_factory):
     assert result.exit_code == 2 and not calls
 
 
-@pytest.mark.parametrize('sort', ['id','difficulty','rate','solvers','random'])
+@pytest.mark.parametrize('sort', ['id','difficulty','rate','accepted','random'])
 def test_list_sort_options(source_factory, sort):
     result = runner.invoke(cli.app, ['list','--sort',sort,'--order','asc'])
     assert result.exit_code == 0, result.exception
