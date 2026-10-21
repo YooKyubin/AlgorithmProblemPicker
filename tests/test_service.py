@@ -74,7 +74,7 @@ def test_incomplete_collection_never_filters_sorts_or_samples(problem, monkeypat
     with pytest.raises(SourceCompletenessError):
         getattr(Picker(source, report=lambda progress: stages.append(progress.stage)), operation)(SearchCriteria())
     assert not source.collected
-    assert 'Complete' not in stages and stages[-1] == 'Failed'
+    assert stages == ['Collecting','Failed']
 
 
 def test_recommend_collects_all_candidates_before_sample(problem, monkeypatch):

@@ -6,7 +6,7 @@ import re
 import time
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
-from playwright.sync_api import Browser, BrowserContext, Error, JSHandle, Page, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Error, JSHandle, Page, Request, sync_playwright
 
 from .models import CompletedListing, Known, Problem, Rated, SearchCriteria
 from .models import Status, Unavailable, Unrated, UserReference, now
@@ -60,21 +60,45 @@ _SNAPSHOT = r"""() => {
 }"""
 
 
-# Observe only this operation's public result DOM, not application state.
+# An empty load needs an explicit public loading cycle, not a finished request.
+_LIST_UPDATE = """root => {
+    const state = {completed:false};
+    const observer = new MutationObserver(mutations => {
+        if (mutations.some(m => m.type === 'attributes' && m.oldValue === 'true' &&
+            m.target.getAttribute('aria-busy') !== 'true')) state.completed = true;
+    });
+    observer.observe(root, {subtree:true, attributes:true,
+                            attributeFilter:['aria-busy'], attributeOldValue:true});
+    state.observer = observer;
+    return state;
+}"""
+
+
+# Observe only this operation's result/empty DOM and public loading completion.
 _USER_UPDATE = """root => {
-    const state = {revision:0};
-    const result = '.jg-find-result, .jg-find-note';
+    const state = {revision:0, loading:false, completed:false};
+    const result = '.jg-find-result';
     const element = node => node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     const observer = new MutationObserver(mutations => {
         if (mutations.some(m =>
-            m.type === 'attributes' || element(m.target)?.closest(result) ||
+            (element(m.target)?.closest(result) && (m.type !== 'attributes' ||
+                ['href','onclick'].includes(m.attributeName))) ||
             [...m.addedNodes, ...m.removedNodes].some(node => {
                 const e = element(node);
                 return e && (e.matches(result) || e.querySelector(result));
             }))) state.revision++;
+        const note = [...root.querySelectorAll('.jg-find-note')].map(e => e.innerText).join(' ');
+        const busy = root.matches('[aria-busy="true"]') || !!root.querySelector('[aria-busy="true"]') ||
+                     /검색 중|로딩|불러오는 중/.test(note);
+        if ((state.loading && !busy) || mutations.some(m =>
+            m.type === 'attributes' && m.attributeName === 'aria-busy' &&
+            m.oldValue === 'true' && m.target.getAttribute('aria-busy') !== 'true')) state.completed = true;
+        state.loading = busy;
+        if (/검색 결과가 없습니다|사용자를 찾을 수 없습니다/.test(note)) state.revision++;
     });
     observer.observe(root, {childList:true, subtree:true, characterData:true,
-                            attributes:true, attributeFilter:['aria-busy']});
+                            attributes:true, attributeOldValue:true,
+                            attributeFilter:['aria-busy','href','onclick']});
     state.observer = observer;
     return state;
 }"""
@@ -85,9 +109,7 @@ class JungolSource:
         self._report = report
         self._last_start = float('-inf')
         self._http_failure = ""
-        self._pending: dict = {}
-        self._started_requests = 0
-        self._completed_requests = 0
+        self._pending: set[Request] = set()
         self._dom_timeout = 15_000
 
     def __enter__(self) -> "JungolSource":
@@ -139,15 +161,13 @@ class JungolSource:
 
     def _request_started(self, request) -> None:
         if self._relevant(request):
-            self._started_requests += 1
-            self._pending[request] = self._started_requests
+            self._pending.add(request)
 
     def _request_finished(self, request) -> None:
-        sequence = self._pending.pop(request, 0)
-        self._completed_requests = max(self._completed_requests, sequence)
+        self._pending.discard(request)
 
     def _request_failed(self, request) -> None:
-        self._pending.pop(request, None)
+        self._pending.discard(request)
         if self._relevant(request):
             self._http_failure = f"페이지 전송 실패: {request.failure}"
 
@@ -183,7 +203,7 @@ class JungolSource:
             raise SourceAccessError("정올 오류: " + "; ".join(snapshot['errors']))
 
     def _wait_listing(self, previous: set[int] | None = None,
-                      request_checkpoint: int | None = None) -> dict:
+                      update: JSHandle | None = None) -> dict:
         deadline = time.monotonic() + self._dom_timeout / 1000
         last_snapshot = None
         while True:
@@ -196,8 +216,8 @@ class JungolSource:
                     if previous is None:
                         return snapshot
                     ids = {self._problem(row).id for row in snapshot['rows']}
-                    # A temporarily removed button does not prove an empty final load.
-                    completed_load = request_checkpoint is not None and self._completed_requests > request_checkpoint
+                    # A removed button and transport completion do not prove an empty final load.
+                    completed_load = update is not None and update.evaluate('state => state.completed')
                     if ids - previous or (completed_load and not snapshot['more'] and not snapshot['next']):
                         return snapshot
             if time.monotonic() >= deadline:
@@ -322,11 +342,10 @@ class JungolSource:
         page = self._list_page
         scope = page.locator('main').filter(has=page.locator('.jg-find-search input')).last
         update = scope.evaluate_handle(_USER_UPDATE)
-        request_checkpoint = self._started_requests
         failed = False
         try:
             action()
-            return self._wait_user_page(handle, update, request_checkpoint, expected)
+            return self._wait_user_page(handle, update, expected)
         except BaseException:
             failed = True
             raise
@@ -339,7 +358,7 @@ class JungolSource:
                 if not failed:
                     raise
 
-    def _wait_user_page(self, handle: str, update: JSHandle, request_checkpoint: int,
+    def _wait_user_page(self, handle: str, update: JSHandle,
                         expected: int | None = None) -> dict:
         deadline = time.monotonic() + self._dom_timeout / 1000
         last_state = None
@@ -349,25 +368,42 @@ class JungolSource:
             state = self._list_page.evaluate(r"""() => {
                 const root = document.querySelector('.jg-find-search')?.parentElement;
                 if (!root) return null;
-                const note = root.querySelector('.jg-find-note')?.innerText || '';
+                const note = [...root.querySelectorAll('.jg-find-note')].map(e => e.innerText).join(' ');
                 return {query:root.querySelector('.jg-find-search input').value,
                     page:Number(root.querySelector('button.page-num.active')?.innerText || 1),
                     handles:[...root.querySelectorAll('.jg-find-result h3')].map(e=>
                         [...e.childNodes].filter(n=>n.nodeType===Node.TEXT_NODE).map(n=>n.textContent).join('').trim()),
                     empty:/검색 결과가 없습니다|사용자를 찾을 수 없습니다/.test(note),
-                    busy:/로딩|검색 중/.test(note)};
+                    busy:root.matches('[aria-busy="true"]') || !!root.querySelector('[aria-busy="true"]') ||
+                         /로딩|검색 중|불러오는 중/.test(note)};
             }""")
-            revision = update.evaluate('state => state.revision')
-            changed = revision > 0 or self._completed_requests > request_checkpoint
+            changed = update.evaluate('state => state.revision > 0 || state.completed')
             ready = not snapshot['busy'] and not self._pending
             if state and changed and ready and state == last_state and not state['busy'] and (
-                state['handles'] or state['empty']
+                bool(state['handles']) != state['empty']
             ) and state['query'] == handle and (expected is None or state['page'] == expected):
                 return state
             if time.monotonic() >= deadline:
                 raise UserResolutionError("사용자 검색 결과를 완전히 확인할 수 없습니다. 공개 검색 화면을 확인하세요.")
             last_state = state if state and changed and ready and not state['busy'] else None
             self._list_page.wait_for_timeout(50)
+
+    def _load_more(self, previous: set[int]) -> dict:
+        update = self._list_page.locator('article').evaluate_handle(_LIST_UPDATE)
+        failed = False
+        try:
+            self._list_page.get_by_role('button', name='더 불러오기', exact=True).click()
+            return self._wait_listing(previous, update)
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            try:
+                update.evaluate('state => state.observer.disconnect()')
+                update.dispose()
+            except Error:
+                if not failed:
+                    raise
 
     def collect(self, criteria: SearchCriteria, user: UserReference | None) -> CompletedListing:
         try:
@@ -433,9 +469,7 @@ class JungolSource:
                 previous = set(candidates)
                 self._pace()
                 try:
-                    request_checkpoint = self._started_requests
-                    self._list_page.get_by_role('button', name='더 불러오기', exact=True).click()
-                    snapshot = self._wait_listing(previous, request_checkpoint)
+                    snapshot = self._load_more(previous)
                 except Error as error:
                     raise SourceCompletenessError(f"추가 목록 조회 실패: {error}") from error
             else:

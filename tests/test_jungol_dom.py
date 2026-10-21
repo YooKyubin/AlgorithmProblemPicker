@@ -127,28 +127,38 @@ def test_cursor_disappears_without_completion_evidence(source):
 def test_cursor_waits_for_loading_and_delayed_next_button(source):
     addition = html('pagination.html').split('<tbody>')[1].split('</tbody>')[0]
     body = html('list.html').replace('</article>', '<button id="more">더 불러오기</button></article>')
-    body += '''<script>document.querySelector('#more').onclick=function(){
-        this.remove(); const article=document.querySelector('article');
+    body += '''<script>document.querySelector('#more').onclick=async function(){
+        const article=document.querySelector('article');
         article.setAttribute('aria-busy','true');
+        await fetch('/fixture-more');this.remove();
         setTimeout(()=>document.querySelector('tbody').insertAdjacentHTML('beforeend', ROW),80);
         setTimeout(()=>{article.removeAttribute('aria-busy');
         article.insertAdjacentHTML('beforeend','<button>더 불러오기</button>')},400)
         }</script>'''.replace('ROW', json.dumps(addition))
     serve(source, body)
+    source._context.route('**/fixture-more', lambda route: route.fulfill(status=204))
     source._dom_timeout = 650
     with pytest.raises(SourceCompletenessError):
         source.collect(SearchCriteria(), None)
     assert source._list_page.get_by_role('button', name='더 불러오기', exact=True).count() == 1
 
 
-def test_cursor_completed_empty_request_is_terminal(source):
+@pytest.mark.parametrize('public_completion', [False, True])
+def test_cursor_empty_request_needs_public_completion(source, public_completion):
     body = html('list.html').replace('</article>', '<button id="more">더 불러오기</button></article>')
     body += '''<script>document.querySelector('#more').onclick=async function(){
-        this.disabled=true; await fetch('/fixture-more'); this.remove();
-        }</script>'''
+        const article=document.querySelector('article');
+        START;this.disabled=true; await fetch('/fixture-more'); this.remove();END;
+        }</script>'''.replace('START', "article.setAttribute('aria-busy','true')" if public_completion else '').replace(
+            'END', "article.removeAttribute('aria-busy')" if public_completion else '')
     serve(source, body)
     source._context.route('**/fixture-more', lambda route: route.fulfill(status=204))
-    assert len(source.collect(SearchCriteria(), None).candidates) == 3
+    source._dom_timeout = 250
+    if public_completion:
+        assert len(source.collect(SearchCriteria(), None).candidates) == 3
+    else:
+        with pytest.raises(SourceCompletenessError):
+            source.collect(SearchCriteria(), None)
 
 
 def test_repeating_page_fails(source):
@@ -279,7 +289,7 @@ def test_user_search_waits_for_current_query_results(source, empty):
         assert source.resolve_user('Sample').account_id == 42
 
 
-def test_user_search_same_handles_waits_for_own_request(source):
+def test_user_search_same_handles_without_dom_completion_fails(source):
     requests = []
     body = user_listing() + '''<script>
         document.querySelector('.jg-find-search input').oninput=()=>{
@@ -290,7 +300,9 @@ def test_user_search_same_handles_waits_for_own_request(source):
         requests.append(route.request.url)
         route.fulfill(status=204)
     source._context.route('**/fixture-search', search)
-    assert source.resolve_user('Sample').account_id == 42
+    source._dom_timeout = 650
+    with pytest.raises(UserResolutionError, match='완전히'):
+        source.resolve_user('Sample')
     assert len(requests) == 1
 
 
@@ -303,9 +315,11 @@ def test_user_search_without_update_evidence_fails(source):
         source.resolve_user('Sample')
 
 
-def test_user_cancel_preserves_interrupt_when_observer_cleanup_fails(source, monkeypatch):
+@pytest.mark.parametrize('operation', ['user','listing'])
+def test_cancel_preserves_interrupt_when_observer_cleanup_fails(source, monkeypatch, operation):
     from playwright.sync_api import Error, Locator
-    serve(source, user_listing())
+    serve(source, user_listing() if operation == 'user' else html('list.html').replace(
+        '</article>','<button>더 불러오기</button></article>'))
     def cancel(*args):
         raise KeyboardInterrupt()
     class DisconnectedObserver:
@@ -313,10 +327,18 @@ def test_user_cancel_preserves_interrupt_when_observer_cleanup_fails(source, mon
             raise Error('driver disconnected during cleanup')
         def dispose(self):
             pass
-    monkeypatch.setattr(source, '_wait_user_page', cancel)
+    if operation == 'user':
+        monkeypatch.setattr(source, '_wait_user_page', cancel)
+    else:
+        wait = source._wait_listing
+        monkeypatch.setattr(source,'_wait_listing',lambda previous=None,update=None:
+                            wait() if previous is None else cancel())
     monkeypatch.setattr(Locator, 'evaluate_handle', lambda *args: DisconnectedObserver())
     with pytest.raises(KeyboardInterrupt):
-        source.resolve_user('Sample')
+        if operation == 'user':
+            source.resolve_user('Sample')
+        else:
+            source.collect(SearchCriteria(),None)
 
 
 def test_user_pages_with_same_handles_still_detect_ambiguity(source):
@@ -448,9 +470,8 @@ def test_progress_cannot_present_incomplete_collection():
         Progress(stage=Stage.COLLECTING).advance(Stage.COMPLETE)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason='001/T041: request completion precedes public result DOM')
 @pytest.mark.parametrize('operation', ['list','recommend'])
-def test_known_t041_delayed_rows_after_completed_request(source, operation):
+def test_t041_delayed_rows_after_completed_request(source, operation):
     from algorithm_problem_picker.service import Picker
     addition = html('pagination.html').split('<tbody>')[1].split('</tbody>')[0]
     body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
@@ -460,31 +481,24 @@ def test_known_t041_delayed_rows_after_completed_request(source, operation):
         }</script>'''.replace('ROW',json.dumps(addition))
     serve(source,body)
     source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
-    try:
-        result = getattr(Picker(source),operation)(SearchCriteria())
-    except SourceCompletenessError:
-        return  # A proven failure also prevents an incomplete success result.
+    source._dom_timeout = 650
+    result = getattr(Picker(source),operation)(SearchCriteria())
     assert result.fetched_count == result.eligible_count == 4
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason='001/T041: empty load requires public completion evidence')
-def test_known_t041_empty_request_alone_is_not_completion(source):
+def test_t041_empty_request_alone_is_not_completion(source):
     body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
     body += '''<script>document.querySelector('#more').onclick=async function(){
         this.disabled=true;await fetch('/fixture-more');this.remove()};</script>'''
     serve(source,body)
     source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
     source._dom_timeout = 250
-    try:
+    with pytest.raises(SourceCompletenessError):
         source.collect(SearchCriteria(),None)
-    except SourceCompletenessError:
-        return
-    assert False, 'transport completion alone returned CompletedListing'
 
 
-@pytest.mark.xfail(strict=True, raises=UserResolutionError, reason='001/T042: completed search request precedes result DOM')
 @pytest.mark.parametrize('page_change', [False,True])
-def test_known_t042_delayed_user_results_after_completed_request(source, page_change):
+def test_t042_delayed_user_results_after_completed_request(source, page_change):
     body = user_listing().replace('@Sample ', '@Other ')
     if page_change:
         body = body.replace('</main>','''<nav><button class="page-num active">1</button>
@@ -500,8 +514,7 @@ def test_known_t042_delayed_user_results_after_completed_request(source, page_ch
     assert source.resolve_user('Sample').account_id == 42
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason='001/T042: same handle needs its current result completion')
-def test_known_t042_same_handle_refresh_after_completed_request(source):
+def test_t042_same_handle_refresh_after_completed_request(source):
     body = user_listing()+'''<script>document.querySelector('.jg-find-search input').oninput=async()=>{
         await fetch('/fixture-search');setTimeout(()=>{
         document.querySelector('.jg-find-result button').setAttribute('onclick',"location.href='/problem?solvedBy=84&solvedByMode=include'")},400)};</script>'''
@@ -510,17 +523,13 @@ def test_known_t042_same_handle_refresh_after_completed_request(source):
     assert source.resolve_user('Sample').account_id == 84
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason='001/T042: delayed empty search must replace previous match')
-def test_known_t042_empty_result_after_completed_request(source):
+def test_t042_empty_result_after_completed_request(source):
     body = user_listing()+'''<script>document.querySelector('.jg-find-search input').oninput=async()=>{
         await fetch('/fixture-search');setTimeout(()=>{
         document.querySelector('.jg-find-result').remove();
         document.querySelector('#users').insertAdjacentHTML('beforeend','<p class="jg-find-note">검색 결과가 없습니다</p>')},400)};</script>'''
     serve(source,body)
     source._context.route('**/fixture-search',lambda route:route.fulfill(status=204))
-    try:
+    with pytest.raises(UserResolutionError, match='없음'):
         source.resolve_user('Sample')
-    except UserResolutionError:
-        assert source._list_page.locator('.jg-find-result').count() == 0
-        return
-    assert False, 'stale previous match resolved before empty current results'
+    assert source._list_page.locator('.jg-find-result').count() == 0

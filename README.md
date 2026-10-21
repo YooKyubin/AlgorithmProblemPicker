@@ -95,4 +95,4 @@ uv run --locked python scripts/benchmark_collection.py --baseline-ref c37208f5a8
 
 기본 테스트는 고정 공급자와 로컬 HTML로 동작하며 원격 요청과 기본 브라우저 호출을 차단한다. 실제 검증과 성능 측정, 알려진 통합 수용 제약은 [002 quickstart.md](specs/002-improve-list-collection/quickstart.md)에 기록한다. 수집 벤치는 고정 다중 목록을 별도 프로세스에서 비교하며 실제 사이트의 개선율을 뜻하지 않는다. 기존 [001 기록](specs/001-jungol-problem-picker/quickstart.md)은 이전 구현 이력이다.
 
-현재 요청 완료 뒤 공개 DOM이 늦게 반영되는 목록·사용자 검색 경계의 기존 001/T041·T042가 남아 있다. 해당 재현은 별도 xfail 테스트로 추적하며, 002의 최종 통합 수용은 이 선행 수정·검증을 기다린다.
+요청 완료 뒤 공개 DOM이 늦게 반영되는 목록·사용자 검색 경계의 001/T041·T042를 수정했다. 전송 완료만으로 결과를 확정하지 않으며, 공개 완료 근거가 없으면 실패한다. 기존 xfail 재현은 일반 회귀 테스트로 전환했고, 수정·검증 결과는 [001 Phase 9 기록](specs/001-jungol-problem-picker/quickstart.md)에 있다.
