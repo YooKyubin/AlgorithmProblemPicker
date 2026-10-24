@@ -3,7 +3,7 @@ from typer.testing import CliRunner
 
 from algorithm_problem_picker import cli
 from algorithm_problem_picker.models import CompletedListing
-from algorithm_problem_picker.ports import SourceAccessError, UserResolutionError
+from algorithm_problem_picker.ports import SourceAccessError, SourceSchemaError, SourceCompletenessError, UserResolutionError
 
 runner = CliRunner()
 
@@ -74,16 +74,17 @@ def test_common_filters_and_exact_user_reach_service(source_factory, monkeypatch
 
 
 @pytest.mark.parametrize('error,code', [(SourceAccessError('access failed'),1),
+    (SourceSchemaError('schema failed'),1), (SourceCompletenessError('progress failed'),1),
     (UserResolutionError('unknown user'),1), (KeyboardInterrupt(),130)])
 def test_list_failure_no_partial_output(error, code, source_factory, monkeypatch):
-    source, _ = source_factory
+    source, calls = source_factory
     def fail(*args):
         raise error
     monkeypatch.setattr(source, 'collect', fail)
     result = runner.invoke(cli.app, ['list'])
     assert result.exit_code == code
-    assert '적격' not in result.stdout
-    assert result.stderr
+    assert result.stdout == ''
+    assert result.stderr and calls[-1] == 'closed'
 
 
 def test_help_and_version_do_not_start_source(source_factory):
@@ -91,6 +92,37 @@ def test_help_and_version_do_not_start_source(source_factory):
     for args in (['--help'], ['--version'], ['list','--help'], ['recommend','--help']):
         assert runner.invoke(cli.app, args).exit_code == 0
     assert calls == []
+
+
+@pytest.mark.parametrize('command', ['list','recommend'])
+def test_tier_help_explains_site_search(source_factory, command):
+    _, calls = source_factory
+    result = runner.invoke(cli.app,[command,'--help'],terminal_width=180)
+    assert result.exit_code == 0 and not calls
+    message = ' '.join(result.stdout.replace('│','').split())
+    assert '사이트 검색 조건' in message
+    assert '표시 티어' in message and '범위 밖' in message
+    assert '미제공' in message and '실제 0' in message and '미확인' in message
+    assert '버튼이 없으면 현재 목록' in message and '지연 반영' in message
+
+
+@pytest.mark.parametrize('command', ['list','recommend'])
+@pytest.mark.parametrize('bounds', [['--min-tier','9','--max-tier','13'],['--min-tier','9'],['--max-tier','7']])
+def test_site_tier_bounds_and_observed_tier_output(source_factory, monkeypatch, problem, command, bounds):
+    from rich.console import Console
+    from algorithm_problem_picker.models import Rated
+    source, calls = source_factory
+    monkeypatch.setattr(source,'collect',lambda *args:CompletedListing((problem(tier=Rated(8)),)))
+    monkeypatch.setattr(cli,'out',Console(width=180,highlight=False,markup=False))
+    result = runner.invoke(cli.app,[command,*bounds])
+    assert result.exit_code == 0, result.exception
+    assert '조회 1' in result.stdout and '적격 1' in result.stdout
+    row = next(line for line in result.stdout.splitlines() if line.lstrip().startswith('1000 '))
+    assert row.split()[:4] == ['1000','문제','1000','8']
+    for option, value in zip(bounds[::2],bounds[1::2]):
+        assert option[2:].replace('-','_')+'='+value in result.stdout
+    assert '티어' not in result.stderr and '경고' not in result.stderr
+    assert calls[-1] == 'closed'
 
 
 def test_accepted_output_and_processing(source_factory, monkeypatch, problem):
@@ -106,6 +138,42 @@ def test_accepted_output_and_processing(source_factory, monkeypatch, problem):
     filtered = runner.invoke(cli.app,['recommend','--min-accepted','0','--max-accepted','0'])
     assert filtered.exit_code == 0 and '적격 1' in filtered.stdout
     assert 'min_accepted=0' in filtered.stdout and '정답 제출 수' in filtered.stdout
+
+
+@pytest.mark.parametrize('command', ['list','recommend'])
+def test_zero_and_missing_statistics_output(source_factory, monkeypatch, problem, command):
+    from decimal import Decimal
+    from rich.console import Console
+    from algorithm_problem_picker.models import Known, Unavailable
+    source, _ = source_factory
+    items = (problem(rate=Known(Decimal('0.00')),accepted=Known(0)),
+             problem(1001,rate=Unavailable(),accepted=Unavailable()))
+    monkeypatch.setattr(source,'collect',lambda *args:CompletedListing(items))
+    monkeypatch.setattr(cli,'out',Console(width=180,highlight=False,markup=False))
+    result = runner.invoke(cli.app,[command]+(['--count','2'] if command == 'recommend' else []))
+    assert result.exit_code == 0, result.exception
+    rows = [line.split() for line in result.stdout.splitlines() if line.lstrip().startswith(('1000 ','1001 '))]
+    assert next(row for row in rows if row[0] == '1000')[4:6] == ['0.00%','0']
+    assert next(row for row in rows if row[0] == '1001')[4:6] == ['미확인','미확인']
+    assert '적격 2' in result.stdout and '미제공으로' not in result.stderr
+
+
+@pytest.mark.parametrize('command', ['list','recommend'])
+@pytest.mark.parametrize('option', ['--min-rate','--max-rate','--min-accepted','--max-accepted'])
+def test_missing_statistic_filter_outputs_normal_empty_result(source_factory, monkeypatch, problem, command, option):
+    from algorithm_problem_picker.models import Unavailable
+    source, calls = source_factory
+    items = (problem(rate=Unavailable(),accepted=Unavailable()),
+             problem(1001,rate=Unavailable(),accepted=Unavailable()))
+    monkeypatch.setattr(source,'collect',lambda *args:CompletedListing(items+items[:1]))
+    result = runner.invoke(cli.app,[command,option,'0']+(['--count','3'] if command == 'recommend' else []))
+    assert result.exit_code == 0, result.exception
+    assert '조건에 맞는 문제가 없습니다.' in result.stdout and '적격 0' in result.stdout
+    assert '조회 2' in result.stdout and ('반환 0' if command == 'recommend' else '표시 0') in result.stdout
+    assert '미제공으로 2개 제외' in result.stderr and '미제공으로' not in result.stdout
+    if command == 'recommend':
+        assert '요청 3' in result.stdout and '부족 3개' in result.stdout
+    assert calls[-1] == 'closed'
 
 
 @pytest.mark.parametrize('command', ['list','recommend'])
@@ -157,14 +225,16 @@ def test_recommend_count_validation(source_factory, count):
     assert not calls
 
 
-@pytest.mark.parametrize('error,code', [(SourceAccessError('failed'),1),(KeyboardInterrupt(),130)])
+@pytest.mark.parametrize('error,code', [(SourceAccessError('failed'),1),(SourceSchemaError('schema failed'),1),
+    (SourceCompletenessError('progress failed'),1),(KeyboardInterrupt(),130)])
 def test_recommend_failure(error, code, source_factory, monkeypatch):
-    source, _ = source_factory
+    source, calls = source_factory
     def fail(*args):
         raise error
     monkeypatch.setattr(source, 'collect', fail)
     result = runner.invoke(cli.app, ['recommend'])
-    assert result.exit_code == code and '부족' not in result.stdout
+    assert result.exit_code == code and result.stdout == ''
+    assert result.stderr and calls[-1] == 'closed'
 
 
 def test_random_desc_invalid_before_source(source_factory):

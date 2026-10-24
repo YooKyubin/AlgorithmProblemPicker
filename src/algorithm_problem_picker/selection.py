@@ -25,9 +25,7 @@ def filter_listing(problems: Sequence[Problem], criteria: SearchCriteria) -> tup
             if isinstance(problem.tier, Unavailable):
                 omitted += 1
                 continue
-            if not isinstance(problem.tier, Rated) or not _within(
-                problem.tier.value, criteria.min_tier, criteria.max_tier
-            ):
+            if not isinstance(problem.tier, Rated):
                 continue
         if rate_filter:
             if isinstance(problem.pass_rate, Unavailable):

@@ -19,11 +19,17 @@ app = typer.Typer(invoke_without_command=True, no_args_is_help=True,
 out = Console(highlight=False, markup=False)
 err = Console(stderr=True, highlight=False, markup=False)
 
-TierOption = Annotated[int | None, typer.Option(min=1, max=30, help="티어 1=Bronze V ~ 30=Ruby I (포함)")]
+TierOption = Annotated[int | None, typer.Option(min=1, max=30,
+    help="사이트 검색 조건인 티어 경계 1=Bronze V ~ 30=Ruby I (포함). 표시 티어는 범위 밖일 수 있습니다.")]
 RateOption = Annotated[str | None, typer.Option(help="정답률 0~100 소수, % 없이 (포함)")]
 AcceptedOption = Annotated[int | None, typer.Option(min=0, help="정답 제출 수, 동일 사용자의 중복 정답 제출 포함 (경계 포함)")]
 StatusOption = Annotated[Status, typer.Option(help="공개 기준 사용자 풀이 여부")]
 UserOption = Annotated[str, typer.Option("--user", help="정확한 공개 핸들. @ 접두사 허용")]
+
+_LISTING_HELP = (
+    "명시적인 빈 통계는 미제공이며 실제 0과 다릅니다. 해당 지표 필터가 있으면 제외하고 없으면 미확인으로 표시합니다. "
+    "더 불러오기 버튼이 없으면 현재 목록으로 완료하며 이후 지연 반영은 보장하지 않습니다."
+)
 
 
 def _reject_legacy(value: str | None, replacement: str) -> None:
@@ -115,7 +121,8 @@ def _run(criteria: SearchCriteria, requested: int, recommend: bool = False,
         raise typer.Exit(1)
 
 
-@app.command("list", help="전체 후보를 조회합니다. 티어 1=Bronze V ~ 30=Ruby I.")
+@app.command("list", help="전체 후보를 조회합니다. 티어는 사이트 검색 조건이며 표시 티어는 요청 범위 밖일 수 있습니다.",
+             epilog=_LISTING_HELP)
 def list_command(
     min_tier: TierOption = None, max_tier: TierOption = None,
     min_rate: RateOption = None, max_rate: RateOption = None,
@@ -138,7 +145,8 @@ def list_command(
     _run(criteria, limit, sort=sort_key, order=order)
 
 
-@app.command(help="전체 적격 후보에서 중복 없이 추천. 티어 1=Bronze V ~ 30=Ruby I.")
+@app.command(help="전체 적격 후보에서 중복 없이 추천. 티어는 사이트 검색 조건이며 표시 티어는 요청 범위 밖일 수 있습니다.",
+             epilog=_LISTING_HELP)
 def recommend(
     min_tier: TierOption = None, max_tier: TierOption = None,
     min_rate: RateOption = None, max_rate: RateOption = None,

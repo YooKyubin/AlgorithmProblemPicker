@@ -1,4 +1,5 @@
 from pathlib import Path
+from decimal import Decimal
 import json
 from urllib.parse import urlencode
 
@@ -6,7 +7,7 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 from algorithm_problem_picker.jungol import JungolSource
-from algorithm_problem_picker.models import Known, SearchCriteria, Unavailable, Unrated, UserReference, now
+from algorithm_problem_picker.models import Known, Rated, SearchCriteria, Unavailable, Unrated, UserReference, now
 from algorithm_problem_picker.ports import SourceAccessError, SourceCompletenessError, SourceSchemaError, UserResolutionError
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'jungol'
@@ -34,6 +35,22 @@ def html(name):
     return (FIXTURES / name).read_text(encoding='utf-8')
 
 
+def serve_statistics(source, body, navigation):
+    if navigation == 'first':
+        serve(source,body)
+        return 1000
+    rows = body.split('<tbody>')[1].split('</tbody>')[0]
+    addition = rows.replace('1000','1003').replace('1001','1004').replace('1002','1005')
+    first = html('site-listing.html').replace('</article>','<button id="more">더 불러오기</button></article>')
+    first += '''<script>document.querySelector('#more').onclick=function(){
+        const article=document.querySelector('article');article.setAttribute('aria-busy','true');
+        document.querySelector('tbody').insertAdjacentHTML('beforeend',ROW);this.remove();
+        article.removeAttribute('aria-busy');
+    };</script>'''.replace('ROW',json.dumps(addition))
+    serve(source,first)
+    return 1003
+
+
 def test_list_distinct_metrics(source):
     serve(source, html('list.html'))
     listing = source.collect(SearchCriteria(), None)
@@ -51,6 +68,111 @@ def test_list_distinct_metrics(source):
 def test_accepted_cell_values(source, text, expected):
     serve(source, html('list.html').replace('>6510<','>'+text+'<'))
     assert source.collect(SearchCriteria(),None).candidates[0].accepted_count == expected
+
+
+@pytest.mark.parametrize('navigation', ['first','more'])
+@pytest.mark.parametrize('missing', ['accepted','rate','both'])
+@pytest.mark.parametrize('marker', ['data-col-empty','data-col-empty="false"'])
+def test_explicit_empty_statistics_are_unavailable(source, navigation, missing, marker):
+    source._dom_timeout = 500
+    body = html('site-listing.html')
+    if missing in {'accepted','both'}:
+        body = body.replace('<td data-col="정답">6510</td>','<td data-col="정답" '+marker+'> </td>',1)
+    if missing in {'rate','both'}:
+        body = body.replace('<td data-col="정답률">47.45%</td>','<td data-col="정답률" '+marker+'> </td>',1)
+    number = serve_statistics(source,body,navigation)
+    listing = source.collect(SearchCriteria(min_tier=9,max_tier=13),None)
+    target = next(problem for problem in listing.candidates if problem.id == number)
+    assert target.tier == Rated(8)
+    assert target.accepted_count == (Unavailable() if missing in {'accepted','both'} else Known(6510))
+    assert target.pass_rate == (Unavailable() if missing in {'rate','both'} else Known(Decimal('47.45')))
+    assert len(listing.candidates) == (3 if navigation == 'first' else 6)
+    zero = next(problem for problem in listing.candidates if problem.id == number+1)
+    assert zero.accepted_count == Known(0) and zero.pass_rate == Known(Decimal('0.00'))
+    assert zero.pass_rate.value.as_tuple().exponent == -2
+
+
+@pytest.mark.parametrize('operation', ['list','recommend'])
+def test_empty_statistics_listing_reaches_numeric_filters(source, operation):
+    from algorithm_problem_picker.service import Picker
+    source._dom_timeout = 500
+    body = html('site-listing.html').replace('<td data-col="정답">6510</td>',
+        '<td data-col="정답" data-col-empty></td>',1).replace('<td data-col="정답률">47.45%</td>',
+        '<td data-col="정답률" data-col-empty></td>',1)
+    serve_statistics(source,body,'more')
+    options = dict(limit=1) if operation == 'list' else dict(count=1)
+    result = getattr(Picker(source),operation)(SearchCriteria(min_tier=9,max_tier=13,
+        min_rate=Decimal('0'),max_accepted=0),**options)
+    assert result.fetched_count == 6 and result.eligible_count == 2 and result.returned_count == 1
+    assert result.omitted_unknown_count == 1 and result.problems[0].id in {1001,1004}
+    assert result.problems[0].accepted_count == Known(0)
+
+
+@pytest.mark.parametrize('column,original,text,expected', [
+    ('정답','6510','0',Known(0)),('정답','6510','3145',Known(3145)),
+    ('정답','6510','3,145',Known(3145)),('정답률','47.45%','0.00%',Known(Decimal('0.00'))),
+    ('정답률','47.45%','47.45%',Known(Decimal('47.45')))])
+def test_empty_marker_keeps_numeric_statistics(source, column, original, text, expected):
+    body = html('site-listing.html').replace('<td data-col="'+column+'">'+original+'</td>',
+        '<td data-col="'+column+'" data-col-empty>'+text+'</td>',1)
+    serve(source,body)
+    problem = source.collect(SearchCriteria(),None).candidates[0]
+    assert (problem.accepted_count if column == '정답' else problem.pass_rate) == expected
+    if column == '정답률':
+        assert problem.pass_rate.value.as_tuple().exponent == -2
+
+
+@pytest.mark.parametrize('text', ['-','—','미확인','미제공'])
+def test_rate_unavailable_tokens_remain_supported(source, text):
+    serve(source,html('site-listing.html').replace('47.45%',text,1))
+    assert source.collect(SearchCriteria(),None).candidates[0].pass_rate == Unavailable()
+
+
+@pytest.mark.parametrize('column,original,value', [('정답','6510','6,510'),('정답률','47.45%','47.45%')])
+def test_unmarked_empty_statistic_waits_for_value(source, monkeypatch, column, original, value):
+    source._dom_timeout = 750
+    serve(source,html('site-listing.html').replace('>'+original+'<','><',1))
+    wait = source._list_page.wait_for_timeout
+    polls = []
+    def hydrate(delay):
+        polls.append(delay)
+        if len(polls) == 3:
+            source._list_page.locator('td[data-col="'+column+'"]').first.evaluate('(cell,value)=>cell.textContent=value',value)
+        wait(delay)
+    monkeypatch.setattr(source._list_page,'wait_for_timeout',hydrate)
+    problem = source.collect(SearchCriteria(),None).candidates[0]
+    assert len(polls) >= 3
+    assert (problem.accepted_count if column == '정답' else problem.pass_rate) == (
+        Known(6510) if column == '정답' else Known(Decimal('47.45')))
+
+
+@pytest.mark.parametrize('navigation', ['first','more'])
+@pytest.mark.parametrize('column,original', [('정답','6510'),('정답률','47.45%')])
+@pytest.mark.parametrize('content', ['', '<a href="/problem/1001"></a>'])
+def test_unmarked_empty_statistic_never_becomes_unavailable(source, navigation, column, original, content):
+    source._dom_timeout = 200
+    body = html('site-listing.html').replace('>'+original+'<','>'+content+'<',1)
+    number = serve_statistics(source,body,navigation)
+    if navigation == 'first':
+        with pytest.raises(SourceSchemaError,match=str(number)+'.*'+column):
+            source.collect(SearchCriteria(),None)
+    else:
+        with pytest.raises(SourceCompletenessError):
+            source.collect(SearchCriteria(),None)
+
+
+@pytest.mark.parametrize('navigation', ['first','more'])
+@pytest.mark.parametrize('column,original,bad', [('정답','6510','31,45'),('정답률','47.45%','bad metric')])
+@pytest.mark.parametrize('structure', ['missing','duplicate','malformed'])
+def test_invalid_marked_statistic_has_diagnostics(source, navigation, column, original, bad, structure):
+    source._dom_timeout = 200
+    cell = '<td data-col="'+column+'">'+original+'</td>'
+    empty = '<td data-col="'+column+'" data-col-empty></td>'
+    replacement = {'missing':'','duplicate':empty+empty,
+                   'malformed':'<td data-col="'+column+'" data-col-empty>'+bad+'</td>'}[structure]
+    number = serve_statistics(source,html('site-listing.html').replace(cell,replacement,1),navigation)
+    with pytest.raises(SourceSchemaError,match=str(number)+'.*'+column):
+        source.collect(SearchCriteria(),None)
 
 
 @pytest.mark.parametrize('cell', ['', '<td data-col="정답"></td>',
@@ -98,67 +220,72 @@ def test_cursor_loading_and_end(source):
     addition = html('pagination.html').split('<tbody>')[1].split('</tbody>')[0]
     first = html('list.html').replace('</article>', '<button id="more">더 불러오기</button></article>')
     first += '''<script>document.querySelector('#more').onclick=function(){
-        this.textContent='로딩 중...'; setTimeout(()=>{
-        document.querySelector('tbody').insertAdjacentHTML('beforeend', ROW);this.remove()},80)
+        document.querySelector('article').setAttribute('aria-busy','true');
+        this.disabled=true;this.textContent='로딩 중...'; setTimeout(()=>{
+        document.querySelector('tbody').insertAdjacentHTML('beforeend', ROW);this.remove();
+        document.querySelector('article').removeAttribute('aria-busy')},80)
         }</script>'''.replace('ROW', json.dumps(addition))
     serve(source, first)
     assert len(source.collect(SearchCriteria(), None).candidates) == 4
 
 
-def test_cursor_disappears_before_delayed_rows(source):
+def test_cursor_absence_finishes_before_future_rows(source):
     addition = html('pagination.html').split('<tbody>')[1].split('</tbody>')[0]
-    body = html('list.html').replace('</article>', '<button id="more">더 불러오기</button></article>')
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
     body += '''<script>document.querySelector('#more').onclick=function(){
-        this.remove(); setTimeout(()=>{
-        document.querySelector('tbody').insertAdjacentHTML('beforeend', ROW)},400)
-        }</script>'''.replace('ROW', json.dumps(addition))
-    serve(source, body)
-    assert [p.id for p in source.collect(SearchCriteria(), None).candidates] == [1000,1001,1002,1003]
+        document.querySelector('article').setAttribute('aria-busy','true');this.remove();
+        document.addEventListener('fixture-finish',()=>{
+            document.querySelector('tbody').insertAdjacentHTML('beforeend',ROW);
+            document.querySelector('article').removeAttribute('aria-busy');
+        },{once:true});
+    };</script>'''.replace('ROW',json.dumps(addition))
+    serve(source,body)
+    source._dom_timeout = 250
+    assert [p.id for p in source.collect(SearchCriteria(),None).candidates] == [1000,1001,1002]
+    source._list_page.evaluate("document.dispatchEvent(new Event('fixture-finish'))")
+    assert source._list_page.locator('tbody tr').count() == 4
 
 
-def test_cursor_disappears_without_completion_evidence(source):
-    serve(source, html('list.html').replace('</article>',
+def test_cursor_absence_needs_no_completion_notice(source):
+    serve(source,html('list.html').replace('</article>',
         '<button onclick="this.remove()">더 불러오기</button></article>'))
     source._dom_timeout = 200
-    with pytest.raises(SourceCompletenessError):
-        source.collect(SearchCriteria(), None)
+    assert len(source.collect(SearchCriteria(),None).candidates) == 3
 
 
-def test_cursor_waits_for_loading_and_delayed_next_button(source):
+def test_cursor_absence_does_not_wait_for_future_button(source):
     addition = html('pagination.html').split('<tbody>')[1].split('</tbody>')[0]
-    body = html('list.html').replace('</article>', '<button id="more">더 불러오기</button></article>')
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
     body += '''<script>document.querySelector('#more').onclick=async function(){
-        const article=document.querySelector('article');
-        article.setAttribute('aria-busy','true');
+        const article=document.querySelector('article');article.setAttribute('aria-busy','true');
         await fetch('/fixture-more');this.remove();
-        setTimeout(()=>document.querySelector('tbody').insertAdjacentHTML('beforeend', ROW),80);
-        setTimeout(()=>{article.removeAttribute('aria-busy');
-        article.insertAdjacentHTML('beforeend','<button>더 불러오기</button>')},400)
-        }</script>'''.replace('ROW', json.dumps(addition))
-    serve(source, body)
-    source._context.route('**/fixture-more', lambda route: route.fulfill(status=204))
-    source._dom_timeout = 650
-    with pytest.raises(SourceCompletenessError):
-        source.collect(SearchCriteria(), None)
-    assert source._list_page.get_by_role('button', name='더 불러오기', exact=True).count() == 1
+        document.addEventListener('fixture-finish',()=>{
+            document.querySelector('tbody').insertAdjacentHTML('beforeend',ROW);
+            article.insertAdjacentHTML('beforeend','<button>더 불러오기</button>');
+            article.removeAttribute('aria-busy');
+        },{once:true});
+    };</script>'''.replace('ROW',json.dumps(addition))
+    serve(source,body)
+    source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
+    source._dom_timeout = 250
+    assert len(source.collect(SearchCriteria(),None).candidates) == 3
+    source._list_page.evaluate("document.dispatchEvent(new Event('fixture-finish'))")
+    assert source._list_page.locator('tbody tr').count() == 4
+    assert source._list_page.get_by_role('button',name='더 불러오기',exact=True).count() == 1
 
 
-@pytest.mark.parametrize('public_completion', [False, True])
-def test_cursor_empty_request_needs_public_completion(source, public_completion):
-    body = html('list.html').replace('</article>', '<button id="more">더 불러오기</button></article>')
+@pytest.mark.parametrize('public_completion', [False,True])
+def test_cursor_empty_request_finishes_with_or_without_notice(source, public_completion):
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
     body += '''<script>document.querySelector('#more').onclick=async function(){
         const article=document.querySelector('article');
-        START;this.disabled=true; await fetch('/fixture-more'); this.remove();END;
-        }</script>'''.replace('START', "article.setAttribute('aria-busy','true')" if public_completion else '').replace(
-            'END', "article.removeAttribute('aria-busy')" if public_completion else '')
-    serve(source, body)
-    source._context.route('**/fixture-more', lambda route: route.fulfill(status=204))
+        START;this.disabled=true;await fetch('/fixture-more');this.remove();END;
+    };</script>'''.replace('START',"article.setAttribute('aria-busy','true')" if public_completion else '').replace(
+        'END',"article.removeAttribute('aria-busy')" if public_completion else '')
+    serve(source,body)
+    source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
     source._dom_timeout = 250
-    if public_completion:
-        assert len(source.collect(SearchCriteria(), None).candidates) == 3
-    else:
-        with pytest.raises(SourceCompletenessError):
-            source.collect(SearchCriteria(), None)
+    assert len(source.collect(SearchCriteria(),None).candidates) == 3
 
 
 def test_repeating_page_fails(source):
@@ -172,6 +299,122 @@ def test_no_progress_cursor_fails(source):
     source._dom_timeout = 150
     with pytest.raises(SourceCompletenessError):
         source.collect(SearchCriteria(), None)
+
+
+def test_absent_cursor_uses_one_current_snapshot_despite_busy_pending(source, monkeypatch):
+    from algorithm_problem_picker.jungol import _SNAPSHOT
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=function(){
+        document.querySelector('article').setAttribute('aria-busy','true');
+        fetch('/fixture-held');this.remove();
+    };</script>'''
+    serve(source,body)
+    held = []
+    source._context.route('**/fixture-held',lambda route:held.append(route))
+    snapshots = []
+    evaluate = source._list_page.evaluate
+    def observe(expression, *args):
+        snapshot = evaluate(expression,*args)
+        if expression == _SNAPSHOT and snapshot['busy']:
+            snapshots.append(snapshot)
+        return snapshot
+    monkeypatch.setattr(source._list_page,'evaluate',observe)
+    source._dom_timeout = 250
+    assert len(source.collect(SearchCriteria(),None).candidates) == 3
+    assert held and source._pending and len(snapshots) == 1
+    held[0].fulfill(status=204)
+
+
+@pytest.mark.parametrize('initial_empty', [False,True])
+def test_final_empty_current_listing_keeps_accumulated_candidates(source, initial_empty):
+    body = html('site-listing.html')
+    if initial_empty:
+        rows = body.split('<tbody>')[1].split('</tbody>')[0]
+        body = body.replace(rows,'').replace('</article>','<p>검색 결과가 없습니다.</p></article>')
+    body = body.replace('</article>','<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=function(){
+        document.querySelector('tbody').innerHTML='';this.remove();
+        document.querySelector('article').insertAdjacentHTML('beforeend','<p>검색 결과가 없습니다.</p>');
+    };</script>'''
+    serve(source,body)
+    source._dom_timeout = 250
+    assert len(source.collect(SearchCriteria(),None).candidates) == (0 if initial_empty else 3)
+
+
+@pytest.mark.parametrize('controls', ['<button>더 불러오기</button><button>더 불러오기</button>',
+    '<a rel="next" href="?page=2">다음</a><a rel="next" href="?page=3">다음</a>',
+    '<a rel="next" href="?page=2">다음</a><button>더 불러오기</button>'])
+def test_duplicate_controls_after_click_remain_schema_failure(source, controls):
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=function(){
+        this.remove();document.querySelector('article').insertAdjacentHTML('beforeend',CONTROLS);
+    };</script>'''.replace('CONTROLS',json.dumps(controls))
+    serve(source,body)
+    source._dom_timeout = 200
+    with pytest.raises(SourceSchemaError,match='컨트롤'):
+        source.collect(SearchCriteria(),None)
+
+
+@pytest.mark.parametrize('page_kind', ['valid','no-new-id','repeated','foreign'])
+def test_more_to_numbered_page_keeps_page_validation(source, page_kind):
+    params = 'type=problem&sort=idAsc&unrated=include'
+    href = {'valid':'?'+params+'&page=2','no-new-id':'?'+params+'&page=2',
+            'repeated':'?'+params,'foreign':'https://example.com/problem?page=2'}[page_kind]
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=function(){
+        this.outerHTML=NEXT;
+    };</script>'''.replace('NEXT',json.dumps('<a rel="next" href="'+href+'">다음</a>'))
+    second = html('list.html') if page_kind == 'no-new-id' else html('pagination.html')
+    serve(source,lambda url:second if 'page=2' in url else body)
+    source._dom_timeout = 300
+    if page_kind == 'valid':
+        assert [p.id for p in source.collect(SearchCriteria(),None).candidates] == [1000,1001,1002,1003]
+    else:
+        with pytest.raises(SourceSchemaError if page_kind == 'foreign' else SourceCompletenessError):
+            source.collect(SearchCriteria(),None)
+
+
+@pytest.mark.parametrize('update,error', [
+    ("document.querySelector('img').src='/solved/99.svg'",SourceSchemaError),
+    ("document.querySelector('td[data-col=\"정답\"]').textContent='bad'",SourceSchemaError),
+    ("document.querySelector('table').remove()",SourceSchemaError),
+    ("document.querySelector('article').insertAdjacentHTML('beforeend','<div role=\"alert\">실패</div>')",SourceAccessError)])
+def test_absent_cursor_does_not_hide_invalid_current_listing(source, update, error):
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
+    body += '<script>document.querySelector("#more").onclick=function(){this.remove();UPDATE;};</script>'.replace('UPDATE',update)
+    serve(source,body)
+    source._dom_timeout = 200
+    with pytest.raises(error):
+        source.collect(SearchCriteria(),None)
+
+
+@pytest.mark.parametrize('operation', ['list','recommend'])
+def test_retained_cursor_collects_entire_population_before_limit(source, monkeypatch, operation):
+    from algorithm_problem_picker.service import Picker
+    body = html('site-listing.html')
+    row = body.split('<tbody>')[1].split('</tbody>')[0].split('</tr>')[0]+'</tr>'
+    first = row.replace('1000','1003')
+    last = row.replace('1000','1004').replace('6510','99999')
+    duplicate = row.replace('범위 밖 문제','later duplicate')
+    body = body.replace('</article>','<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=function(){
+        if(!this.dataset.step){document.querySelector('tbody').insertAdjacentHTML('beforeend',FIRST);this.dataset.step='1';}
+        else{document.querySelector('tbody').insertAdjacentHTML('beforeend',LAST);this.remove();}
+    };</script>'''.replace('FIRST',json.dumps(first)).replace('LAST',json.dumps(last+duplicate))
+    serve(source,body)
+    documents = []
+    source._context.on('request',lambda request:documents.append(request.url) if request.resource_type == 'document' else None)
+    def sample(items, k):
+        assert k == 1 and [item.id for item in items] == [1000,1001,1002,1003,1004]
+        assert items[0].title == '범위 밖 문제'
+        return items[-1:]
+    monkeypatch.setattr('random.sample',sample)
+    source._dom_timeout = 250
+    options = dict(limit=1,sort='accepted',order='desc') if operation == 'list' else dict(count=1)
+    result = getattr(Picker(source),operation)(SearchCriteria(min_tier=9,max_tier=13),**options)
+    assert result.fetched_count == result.eligible_count == 5 and result.returned_count == 1
+    assert result.problems[0].id == 1004 and result.problems[0].tier == Rated(8)
+    assert len(documents) == 1 and '/problem?' in documents[0]
 
 
 def test_empty_vs_temporarily_empty(source):
@@ -315,30 +558,38 @@ def test_user_search_without_update_evidence_fails(source):
         source.resolve_user('Sample')
 
 
-@pytest.mark.parametrize('operation', ['user','listing'])
-def test_cancel_preserves_interrupt_when_observer_cleanup_fails(source, monkeypatch, operation):
+def test_user_cancel_preserves_interrupt_when_observer_cleanup_fails(source, monkeypatch):
     from playwright.sync_api import Error, Locator
-    serve(source, user_listing() if operation == 'user' else html('list.html').replace(
-        '</article>','<button>더 불러오기</button></article>'))
+    serve(source,user_listing())
+    interrupt = KeyboardInterrupt('original')
     def cancel(*args):
-        raise KeyboardInterrupt()
+        raise interrupt
     class DisconnectedObserver:
         def evaluate(self, *args):
             raise Error('driver disconnected during cleanup')
         def dispose(self):
             pass
-    if operation == 'user':
-        monkeypatch.setattr(source, '_wait_user_page', cancel)
-    else:
-        wait = source._wait_listing
-        monkeypatch.setattr(source,'_wait_listing',lambda previous=None,update=None:
-                            wait() if previous is None else cancel())
-    monkeypatch.setattr(Locator, 'evaluate_handle', lambda *args: DisconnectedObserver())
-    with pytest.raises(KeyboardInterrupt):
-        if operation == 'user':
-            source.resolve_user('Sample')
-        else:
-            source.collect(SearchCriteria(),None)
+    monkeypatch.setattr(source,'_wait_user_page',cancel)
+    monkeypatch.setattr(Locator,'evaluate_handle',lambda *args:DisconnectedObserver())
+    with pytest.raises(KeyboardInterrupt) as caught:
+        source.resolve_user('Sample')
+    assert caught.value is interrupt
+
+
+def test_cancel_during_load_more_preserves_interrupt(source, monkeypatch):
+    from playwright.sync_api import Locator
+    serve(source,html('list.html').replace('</article>','<button>더 불러오기</button></article>'))
+    interrupt = KeyboardInterrupt('original')
+    wait = source._wait_listing
+    def cancel(previous=None, *args):
+        if previous is not None:
+            raise interrupt
+        return wait()
+    monkeypatch.setattr(source,'_wait_listing',cancel)
+    monkeypatch.setattr(Locator,'evaluate_handle',lambda *args:pytest.fail('listing observer must be removed'))
+    with pytest.raises(KeyboardInterrupt) as caught:
+        source.collect(SearchCriteria(),None)
+    assert caught.value is interrupt
 
 
 def test_user_pages_with_same_handles_still_detect_ambiguity(source):
@@ -347,11 +598,15 @@ def test_user_pages_with_same_handles_still_detect_ambiguity(source):
         <button class="page-num" onclick="selectPage(2)">2</button></nav></main>''')
     body += '''<script>
         document.querySelector('.jg-find-search input').oninput=()=>{
-            document.querySelector('.jg-find-result h3').textContent='@Sample'};
+            document.querySelector('#users').setAttribute('aria-busy','true');
+            document.querySelector('.jg-find-result h3').textContent='@Sample';
+            document.querySelector('#users').removeAttribute('aria-busy')};
         function selectPage(n){
+            document.querySelector('#users').setAttribute('aria-busy','true');
             document.querySelectorAll('.page-num').forEach(e=>
                 e.classList.toggle('active',Number(e.textContent)===n));
-            setTimeout(()=>{document.querySelector('.jg-find-result h3').textContent='@Sample'},150)
+            setTimeout(()=>{document.querySelector('.jg-find-result h3').textContent='@Sample';
+                document.querySelector('#users').removeAttribute('aria-busy')},150)
         }</script>'''
     serve(source, body)
     source._dom_timeout = 600
@@ -378,7 +633,11 @@ def test_tier_absence_preserved_across_listing(source, bounds, navigation):
         serve(source, lambda url: second if 'page=2' in url else first)
     elif navigation == 'more':
         body = body.replace('</article>', '<button id="more">더 불러오기</button></article>')
-        body += '<script>document.querySelector("#more").onclick=function(){document.querySelector("tbody").insertAdjacentHTML("beforeend", ROW);this.remove()}</script>'.replace('ROW', json.dumps(addition))
+        body += '''<script>document.querySelector("#more").onclick=function(){
+            document.querySelector('article').setAttribute('aria-busy','true');
+            document.querySelector("tbody").insertAdjacentHTML("beforeend", ROW);this.remove();
+            document.querySelector('article').removeAttribute('aria-busy')
+        }</script>'''.replace('ROW', json.dumps(addition))
         serve(source, body)
     else:
         serve(source, body)
@@ -388,13 +647,44 @@ def test_tier_absence_preserved_across_listing(source, bounds, navigation):
     assert isinstance(listing.candidates[2].tier, Unavailable)
 
 
-@pytest.mark.parametrize('bounds', [dict(min_tier=10), dict(max_tier=8), dict(min_tier=10,max_tier=14)])
-def test_rated_outside_range_has_diagnostics(source, bounds):
-    serve(source, html('tier-pagination.html'))
-    with pytest.raises(SourceAccessError, match='1000.*9.*요청') as caught:
-        source.collect(SearchCriteria(**bounds), None)
-    if len(bounds) == 1:
-        assert '제한 없음' in str(caught.value)
+@pytest.mark.parametrize('bounds', [dict(min_tier=9,max_tier=13), dict(min_tier=9), dict(max_tier=10)])
+@pytest.mark.parametrize('navigation', ['first','next','more'])
+@pytest.mark.parametrize('operation', ['list','recommend'])
+def test_rated_site_results_preserved_across_listing(source, monkeypatch, bounds, navigation, operation):
+    from algorithm_problem_picker.service import Picker
+    body = html('site-listing.html')
+    rows = body.split('<tbody>')[1].split('</tbody>')[0]
+    addition = rows.replace('1000','1003').replace('1001','1004').replace('1002','1005')
+    if navigation == 'next':
+        params = dict(type='problem',sort='idAsc',unrated='exclude',page=2)
+        params.update({{'min_tier':'minTier','max_tier':'maxTier'}[key]:value for key,value in bounds.items()})
+        first = body.replace('</article>','<a rel="next" href="?'+urlencode(params)+'">다음</a></article>')
+        second = body.replace(rows,addition)
+        serve(source,lambda url:second if 'page=2' in url else first)
+    elif navigation == 'more':
+        body = body.replace('</article>','<button id="more">더 불러오기</button></article>')
+        body += '''<script>document.querySelector('#more').onclick=function(){
+            const article=document.querySelector('article');article.setAttribute('aria-busy','true');
+            document.querySelector('tbody').insertAdjacentHTML('beforeend',ROW);this.remove();
+            article.removeAttribute('aria-busy');
+        };</script>'''.replace('ROW',json.dumps(addition))
+        serve(source,body)
+    else:
+        serve(source,body)
+    messages = []
+    monkeypatch.setattr(source,'_report',messages.append)
+    result = getattr(Picker(source),operation)(SearchCriteria(**bounds),
+        **({'limit':10} if operation == 'list' else {'count':10}))
+    expected_ids = [1000,1001,1002] if navigation == 'first' else [1000,1001,1002,1003,1004,1005]
+    problems = sorted(result.problems,key=lambda problem:problem.id)
+    assert [problem.id for problem in problems] == expected_ids
+    assert [problem.tier for problem in problems] == [Rated(8),Rated(10),Rated(13)] * (1 if navigation == 'first' else 2)
+    assert problems[1].accepted_count == Known(0) and problems[1].pass_rate.value == 0
+    assert problems[1].pass_rate.value.as_tuple().exponent == -2
+    assert result.fetched_count == result.eligible_count == result.returned_count == len(expected_ids)
+    assert result.omitted_unknown_count == 0
+    assert len(messages) == (1 if navigation == 'first' else 2)
+    assert all(message.startswith('Collecting · 수집 ') for message in messages)
 
 
 @pytest.mark.parametrize('replacement', ['', '<img src="/solved/99.svg">', '<img src="/solved/9.svg"><img src="/solved/10.svg">'])
@@ -411,7 +701,11 @@ def test_filters_reverified_after_more(source, change):
               'duplicate': "history.replaceState(null,'',location.href+'&minTier=9')",
               'ui': "document.querySelector('[aria-label=\"난이도 하한\"]').setAttribute('aria-valuenow','8')"}[change]
     addition = body.split('<tbody>')[1].split('</tbody>')[0].replace('1000','1003')
-    body += '<script>document.querySelector("#more").onclick=function(){UPDATE;document.querySelector("tbody").insertAdjacentHTML("beforeend", ROW);this.remove()}</script>'.replace('UPDATE',update).replace('ROW',json.dumps(addition))
+    body += '''<script>document.querySelector("#more").onclick=function(){
+        document.querySelector('article').setAttribute('aria-busy','true');
+        UPDATE;document.querySelector("tbody").insertAdjacentHTML("beforeend", ROW);this.remove();
+        document.querySelector('article').removeAttribute('aria-busy')
+    }</script>'''.replace('UPDATE',update).replace('ROW',json.dumps(addition))
     serve(source, body)
     with pytest.raises(SourceAccessError):
         source.collect(SearchCriteria(min_tier=9), None)
@@ -471,30 +765,39 @@ def test_progress_cannot_present_incomplete_collection():
 
 
 @pytest.mark.parametrize('operation', ['list','recommend'])
-def test_t041_delayed_rows_after_completed_request(source, operation):
+@pytest.mark.parametrize('public_completion', [False,True])
+def test_t041_current_rows_after_request_are_complete(source, operation, public_completion):
     from algorithm_problem_picker.service import Picker
     addition = html('pagination.html').split('<tbody>')[1].split('</tbody>')[0]
     body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
     body += '''<script>document.querySelector('#more').onclick=async function(){
-        this.disabled=true; await fetch('/fixture-more');this.remove();
-        setTimeout(()=>document.querySelector('tbody').insertAdjacentHTML('beforeend',ROW),400)
-        }</script>'''.replace('ROW',json.dumps(addition))
+        START;this.disabled=true;await fetch('/fixture-more');this.remove();
+        document.addEventListener('fixture-finish',()=>{
+            document.querySelector('tbody').insertAdjacentHTML('beforeend',ROW);END;
+        },{once:true});
+    };</script>'''.replace('ROW',json.dumps(addition)).replace(
+        'START',"document.querySelector('article').setAttribute('aria-busy','true')" if public_completion else '').replace(
+        'END',"document.querySelector('article').removeAttribute('aria-busy')" if public_completion else '')
     serve(source,body)
     source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
-    source._dom_timeout = 650
-    result = getattr(Picker(source),operation)(SearchCriteria())
-    assert result.fetched_count == result.eligible_count == 4
+    source._dom_timeout = 250
+    stages = []
+    result = getattr(Picker(source,lambda progress:stages.append(progress.stage)),operation)(
+        SearchCriteria(),**({'limit':1} if operation == 'list' else {'count':1}))
+    assert result.fetched_count == result.eligible_count == 3 and result.returned_count == 1
+    assert stages == ['Collecting','Processing','Complete']
+    source._list_page.evaluate("document.dispatchEvent(new Event('fixture-finish'))")
+    assert source._list_page.locator('tbody tr').count() == 4
 
 
-def test_t041_empty_request_alone_is_not_completion(source):
+def test_t041_empty_request_button_absence_is_completion(source):
     body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
     body += '''<script>document.querySelector('#more').onclick=async function(){
         this.disabled=true;await fetch('/fixture-more');this.remove()};</script>'''
     serve(source,body)
     source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
     source._dom_timeout = 250
-    with pytest.raises(SourceCompletenessError):
-        source.collect(SearchCriteria(),None)
+    assert len(source.collect(SearchCriteria(),None).candidates) == 3
 
 
 @pytest.mark.parametrize('page_change', [False,True])
@@ -533,3 +836,90 @@ def test_t042_empty_result_after_completed_request(source):
     with pytest.raises(UserResolutionError, match='없음'):
         source.resolve_user('Sample')
     assert source._list_page.locator('.jg-find-result').count() == 0
+
+
+@pytest.mark.parametrize('operation', ['list','recommend'])
+def test_t041_current_rows_do_not_wait_for_future_control(source, operation):
+    from algorithm_problem_picker.service import Picker
+    addition = html('pagination.html').split('<tbody>')[1].split('</tbody>')[0]
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=async function(){
+        this.disabled=true;await fetch('/fixture-more');this.remove();
+        document.querySelector('tbody').insertAdjacentHTML('beforeend',ROW);
+        document.addEventListener('fixture-finish',()=>{
+            const button=document.createElement('button');button.textContent='더 불러오기';
+            button.onclick=function(){
+                document.querySelector('tbody').insertAdjacentHTML('beforeend',LAST);this.remove();
+            };document.querySelector('article').append(button);
+        },{once:true});
+    };</script>'''.replace('ROW',json.dumps(addition)).replace('LAST',json.dumps(addition.replace('1003','1004')))
+    serve(source,body)
+    source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
+    source._dom_timeout = 250
+    result = getattr(Picker(source),operation)(SearchCriteria(),
+        **({'limit':1} if operation == 'list' else {'count':1}))
+    assert result.fetched_count == result.eligible_count == 4 and result.returned_count == 1
+    source._list_page.evaluate("document.dispatchEvent(new Event('fixture-finish'))")
+    source._list_page.get_by_role('button',name='더 불러오기',exact=True).click()
+    assert source._list_page.locator('tbody tr').count() == 5
+
+
+@pytest.mark.parametrize('same_handle', [False,True])
+@pytest.mark.parametrize('intermediate', ['marker','same-heading','profile-link'])
+def test_t042_intermediate_result_change_is_not_current_results(source, same_handle, intermediate):
+    body = user_listing()
+    if not same_handle:
+        body = body.replace('@Sample ','@Other ')
+    if intermediate == 'profile-link':
+        body += '''<script>document.querySelector('.jg-find-result').insertAdjacentHTML('beforeend',
+            '<a href="/user/previous">프로필</a>')</script>'''
+    marker = {
+        'marker':"document.querySelector('.jg-find-result').insertAdjacentHTML('beforeend','<span>updating</span>')",
+        'same-heading':"document.querySelector('.jg-find-result h3').innerHTML='<span>updating</span>'+document.querySelector('.jg-find-result h3').innerHTML",
+        'profile-link':"document.querySelector('.jg-find-result a').setAttribute('href','/user/current')",
+    }[intermediate]
+    update = ("document.querySelector('.jg-find-result button').setAttribute('onclick',"
+              "\"location.href='/problem?solvedBy=84&solvedByMode=include'\")" if same_handle else
+              "document.querySelector('.jg-find-result h3').textContent='@Sample'")
+    body += '''<script>document.querySelector('.jg-find-search input').oninput=async()=>{
+        MARKER;await fetch('/fixture-search');setTimeout(()=>{UPDATE},500)
+    };</script>'''.replace('MARKER',marker).replace('UPDATE',update)
+    serve(source,body)
+    source._context.route('**/fixture-search',lambda route:route.fulfill(status=204))
+    source._dom_timeout = 900
+    assert source.resolve_user('Sample').account_id == (84 if same_handle else 42)
+
+
+def test_t042_decorative_change_without_completion_fails(source):
+    body = user_listing()+'''<script>document.querySelector('.jg-find-search input').oninput=async()=>{
+        document.querySelector('.jg-find-result').insertAdjacentHTML('beforeend','<span>updating</span>');
+        await fetch('/fixture-search');
+    };</script>'''
+    serve(source,body)
+    source._context.route('**/fixture-search',lambda route:route.fulfill(status=204))
+    source._dom_timeout = 250
+    with pytest.raises(UserResolutionError,match='완전히'):
+        source.resolve_user('Sample')
+
+
+def test_unrelated_loading_cycle_does_not_complete_user_search(source):
+    body = user_listing()+'''<script>document.querySelector('.jg-find-search input').oninput=()=>{
+        const decoration=document.createElement('span');
+        document.querySelector('.jg-find-result').append(decoration);
+        decoration.setAttribute('aria-busy','true');decoration.removeAttribute('aria-busy');
+    };</script>'''
+    serve(source,body)
+    source._dom_timeout = 250
+    with pytest.raises(UserResolutionError):
+        source.resolve_user('Sample')
+
+
+def test_unrelated_loading_cycle_does_not_block_absent_cursor(source):
+    body = html('list.html').replace('</article>','<button id="more">더 불러오기</button></article>')
+    body += '''<script>document.querySelector('#more').onclick=function(){
+        const decoration=document.createElement('span');document.querySelector('article').append(decoration);
+        decoration.setAttribute('aria-busy','true');decoration.removeAttribute('aria-busy');this.remove();
+    };</script>'''
+    serve(source,body)
+    source._dom_timeout = 250
+    assert len(source.collect(SearchCriteria(),None).candidates) == 3

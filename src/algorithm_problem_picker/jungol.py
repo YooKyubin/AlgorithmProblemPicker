@@ -27,6 +27,8 @@ _SNAPSHOT = r"""() => {
     const rows = tables.flatMap(t => [...t.querySelectorAll('tbody tr')])
         .map(r => {
             const cell = r.querySelector('td[data-col="문제"]');
+            const rateCells = [...r.querySelectorAll('td[data-col="정답률"]')];
+            const acceptedCells = [...r.querySelectorAll('td[data-col="정답"]')];
             return {
                 links: [...(cell?.querySelectorAll('a') || [])].map(a => ({
                     href: a.getAttribute('href'),
@@ -36,8 +38,10 @@ _SNAPSHOT = r"""() => {
                     unrated: a.matches('.pl-row-link') && !a.querySelector('.pl-card-tier') &&
                              !a.querySelector('img') && !a.querySelector('[title="난이도 미확인"]') && !!a.querySelector('.title')
                 })),
-                rates: [...r.querySelectorAll('td[data-col="정답률"]')].map(e => e.innerText.trim()),
-                accepted: [...r.querySelectorAll('td[data-col="정답"]')].map(e => e.innerText.trim()),
+                rates: rateCells.map(e => e.innerText.trim()),
+                accepted: acceptedCells.map(e => e.innerText.trim()),
+                rateEmpty: rateCells.map(e => e.hasAttribute('data-col-empty')),
+                acceptedEmpty: acceptedCells.map(e => e.hasAttribute('data-col-empty')),
                 rateLinks: [...r.querySelectorAll('td[data-col="정답률"] a')].map(a=>a.getAttribute('href')),
                 regular: !!r.querySelector('[aria-label="일반 문제"]')
             };
@@ -60,41 +64,26 @@ _SNAPSHOT = r"""() => {
 }"""
 
 
-# An empty load needs an explicit public loading cycle, not a finished request.
-_LIST_UPDATE = """root => {
-    const state = {completed:false};
-    const observer = new MutationObserver(mutations => {
-        if (mutations.some(m => m.type === 'attributes' && m.oldValue === 'true' &&
-            m.target.getAttribute('aria-busy') !== 'true')) state.completed = true;
-    });
-    observer.observe(root, {subtree:true, attributes:true,
-                            attributeFilter:['aria-busy'], attributeOldValue:true});
-    state.observer = observer;
-    return state;
-}"""
-
-
-# Observe only this operation's result/empty DOM and public loading completion.
+# Compare public result identities; decorative mutations are not result updates.
 _USER_UPDATE = """root => {
-    const state = {revision:0, loading:false, completed:false};
-    const result = '.jg-find-result';
-    const element = node => node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    const signature = () => JSON.stringify({
+        handles:[...root.querySelectorAll('.jg-find-result h3')].map(e=>
+            [...e.childNodes].filter(n=>n.nodeType===Node.TEXT_NODE).map(n=>n.textContent).join('').trim()),
+        targets:[...root.querySelectorAll('.jg-find-result button')].map(e=>
+            [e.getAttribute('href'),e.getAttribute('onclick')]),
+        empty:[...root.querySelectorAll('.jg-find-note')].some(e=>
+            /검색 결과가 없습니다|사용자를 찾을 수 없습니다/.test(e.innerText))
+    });
+    const state = {initial:signature(), changed:false, loading:false, completed:false};
     const observer = new MutationObserver(mutations => {
-        if (mutations.some(m =>
-            (element(m.target)?.closest(result) && (m.type !== 'attributes' ||
-                ['href','onclick'].includes(m.attributeName))) ||
-            [...m.addedNodes, ...m.removedNodes].some(node => {
-                const e = element(node);
-                return e && (e.matches(result) || e.querySelector(result));
-            }))) state.revision++;
+        state.changed = signature() !== state.initial;
         const note = [...root.querySelectorAll('.jg-find-note')].map(e => e.innerText).join(' ');
-        const busy = root.matches('[aria-busy="true"]') || !!root.querySelector('[aria-busy="true"]') ||
+        const busy = root.matches('[aria-busy="true"]') ||
                      /검색 중|로딩|불러오는 중/.test(note);
         if ((state.loading && !busy) || mutations.some(m =>
-            m.type === 'attributes' && m.attributeName === 'aria-busy' &&
+            m.type === 'attributes' && m.target === root && m.attributeName === 'aria-busy' &&
             m.oldValue === 'true' && m.target.getAttribute('aria-busy') !== 'true')) state.completed = true;
         state.loading = busy;
-        if (/검색 결과가 없습니다|사용자를 찾을 수 없습니다/.test(note)) state.revision++;
     });
     observer.observe(root, {childList:true, subtree:true, characterData:true,
                             attributes:true, attributeOldValue:true,
@@ -102,6 +91,15 @@ _USER_UPDATE = """root => {
     state.observer = observer;
     return state;
 }"""
+
+
+def _empty_statistic(row: dict, metric: str) -> bool:
+    if row[metric] != ['']:
+        return False
+    marker = 'rateEmpty' if metric == 'rates' else 'acceptedEmpty'
+    return row[marker] == [True] or (
+        metric == 'rates' and len(row['links']) == 1 and row['rateLinks'] == [row['links'][0]['href']]
+    )
 
 
 class JungolSource:
@@ -202,28 +200,36 @@ class JungolSource:
         if snapshot['errors']:
             raise SourceAccessError("정올 오류: " + "; ".join(snapshot['errors']))
 
-    def _wait_listing(self, previous: set[int] | None = None,
-                      update: JSHandle | None = None) -> dict:
+    def _wait_listing(self, previous: set[int] | None = None) -> dict:
         deadline = time.monotonic() + self._dom_timeout / 1000
         last_snapshot = None
         while True:
             snapshot = self._list_page.evaluate(_SNAPSHOT)
             self._check_access(snapshot)
+            if len(snapshot['next']) > 1 or snapshot['more'] > 1 or (snapshot['next'] and snapshot['more']):
+                raise SourceSchemaError("목록 진행 컨트롤이 중복됩니다.")
+            ready = snapshot['rows'] and all(row['regular'] and all(
+                len(row[metric]) == 1 and (row[metric][0] or _empty_statistic(row,metric))
+                for metric in ('rates','accepted')) for row in snapshot['rows'])
+            if previous is not None and not snapshot['more'] and not snapshot['next']:
+                if snapshot['tableCount'] != 1 and not snapshot['empty']:
+                    raise SourceSchemaError("문제/정답률 헤더가 있는 목록 표를 식별할 수 없습니다.")
+                if ready or snapshot['empty']:
+                    for row in snapshot['rows']:
+                        self._problem(row)
+                    return snapshot
             if not snapshot['busy'] and not snapshot['moreDisabled'] and not self._pending:
-                ready = snapshot['rows'] and all(row['rates'] and row['accepted'] and
-                    all(row['accepted']) and row['regular'] for row in snapshot['rows'])
                 if (ready or snapshot['empty']) and snapshot == last_snapshot:
                     if previous is None:
                         return snapshot
                     ids = {self._problem(row).id for row in snapshot['rows']}
-                    # A removed button and transport completion do not prove an empty final load.
-                    completed_load = update is not None and update.evaluate('state => state.completed')
-                    if ids - previous or (completed_load and not snapshot['more'] and not snapshot['next']):
+                    if snapshot['next'] or ids - previous:
                         return snapshot
             if time.monotonic() >= deadline:
-                if previous is None and not snapshot['busy'] and not self._pending:
+                if not snapshot['busy'] and not self._pending:
                     for row in snapshot['rows']:
-                        self._problem(row)
+                        if previous is None or any(len(row[metric]) != 1 for metric in ('rates','accepted')):
+                            self._problem(row)
                 error = SourceSchemaError if previous is None else SourceCompletenessError
                 raise error("목록 준비 시간 초과 또는 추가 로드 진행 없음. DOM 구조와 접속 상태를 확인하세요.")
             last_snapshot = snapshot
@@ -261,7 +267,7 @@ class JungolSource:
             else:
                 raise ValueError(f"티어 배지가 누락되거나 중복됩니다: {link['tiers']!r}")
             text = row['rates'][0]
-            if text in _EMPTY or (text == '' and row['rateLinks'] == [link['href']]):
+            if text in _EMPTY or _empty_statistic(row,'rates'):
                 rate = Unavailable()
             elif re.fullmatch(r"\d+(?:\.\d+)?%", text):
                 rate = Known(Decimal(text[:-1]))
@@ -270,7 +276,7 @@ class JungolSource:
             if len(row['accepted']) != 1:
                 raise ValueError(f"정답 제출 수 열 누락/중복: {row['accepted']!r}")
             text = row['accepted'][0]
-            if text in _EMPTY:
+            if text in _EMPTY or _empty_statistic(row,'accepted'):
                 accepted = Unavailable()
             elif re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)', text):
                 accepted = Known(int(text.replace(',', '')))
@@ -373,11 +379,13 @@ class JungolSource:
                     page:Number(root.querySelector('button.page-num.active')?.innerText || 1),
                     handles:[...root.querySelectorAll('.jg-find-result h3')].map(e=>
                         [...e.childNodes].filter(n=>n.nodeType===Node.TEXT_NODE).map(n=>n.textContent).join('').trim()),
+                    targets:[...root.querySelectorAll('.jg-find-result button')].map(e=>
+                        [e.getAttribute('href'),e.getAttribute('onclick')]),
                     empty:/검색 결과가 없습니다|사용자를 찾을 수 없습니다/.test(note),
                     busy:root.matches('[aria-busy="true"]') || !!root.querySelector('[aria-busy="true"]') ||
                          /로딩|검색 중|불러오는 중/.test(note)};
             }""")
-            changed = update.evaluate('state => state.revision > 0 || state.completed')
+            changed = update.evaluate('state => state.changed || state.completed')
             ready = not snapshot['busy'] and not self._pending
             if state and changed and ready and state == last_state and not state['busy'] and (
                 bool(state['handles']) != state['empty']
@@ -389,21 +397,8 @@ class JungolSource:
             self._list_page.wait_for_timeout(50)
 
     def _load_more(self, previous: set[int]) -> dict:
-        update = self._list_page.locator('article').evaluate_handle(_LIST_UPDATE)
-        failed = False
-        try:
-            self._list_page.get_by_role('button', name='더 불러오기', exact=True).click()
-            return self._wait_listing(previous, update)
-        except BaseException:
-            failed = True
-            raise
-        finally:
-            try:
-                update.evaluate('state => state.observer.disconnect()')
-                update.dispose()
-            except Error:
-                if not failed:
-                    raise
+        self._list_page.get_by_role('button', name='더 불러오기', exact=True).click()
+        return self._wait_listing(previous)
 
     def collect(self, criteria: SearchCriteria, user: UserReference | None) -> CompletedListing:
         try:
@@ -435,23 +430,13 @@ class JungolSource:
                     any(key in actual and key not in params for key in filter_keys) or 'status' in actual):
                 raise SourceAccessError("요청한 목록 필터가 적용되지 않았습니다.")
             self._verify_filters(criteria, user)
-            snapshot = self._wait_listing()
+            self._check_access(snapshot)
             if snapshot['tableCount'] != 1 and not snapshot['empty']:
                 raise SourceSchemaError("문제/정답률 헤더가 있는 목록 표를 식별할 수 없습니다.")
             for row in snapshot['rows']:
                 candidate = self._problem(row)
-                if isinstance(candidate.tier, Rated) and (
-                    (criteria.min_tier is not None and candidate.tier.value < criteria.min_tier)
-                    or (criteria.max_tier is not None and candidate.tier.value > criteria.max_tier)
-                ):
-                    lower = criteria.min_tier if criteria.min_tier is not None else '제한 없음'
-                    upper = criteria.max_tier if criteria.max_tier is not None else '제한 없음'
-                    raise SourceAccessError(f"문제 {candidate.id}: 확정 티어 {candidate.tier.value}, "
-                                            f"요청 범위 하한 {lower}, 상한 {upper}; 목록 티어 필터 미적용")
                 candidates.setdefault(candidate.id, candidate)
             self._report(f"Collecting · 수집 {len(candidates)}개 · Ctrl+C 취소")
-            if len(snapshot['next']) > 1 or snapshot['more'] > 1 or (snapshot['next'] and snapshot['more']):
-                raise SourceSchemaError("목록 진행 컨트롤이 중복됩니다.")
             if snapshot['next']:
                 visited.add(self._list_page.url)
                 next_url = urljoin(self._list_page.url, snapshot['next'][0])

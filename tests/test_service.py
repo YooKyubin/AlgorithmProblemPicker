@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from algorithm_problem_picker.models import CompletedListing, Known, SearchCriteria, UserReference, now
+from algorithm_problem_picker.models import CompletedListing, Known, Rated, SearchCriteria, Unavailable, UserReference, now
 from algorithm_problem_picker.ports import SourceAccessError, SourceCompletenessError
 from algorithm_problem_picker.service import Picker
 
@@ -37,6 +37,8 @@ def test_complete_dedup_cheap_filter_and_limit(problem):
     assert result.problems[0].title == '문제 1000'
     assert source.collected
     assert result.problems[0].pass_rate == Known(Decimal('47.45'))
+    assert result.requested_count == result.returned_count == 1 and result.shortage == 0
+    assert result.started_at.tzinfo is not None and result.finished_at >= result.started_at
 
 
 def test_user_partition_and_normalized_exact_handle(problem):
@@ -87,6 +89,8 @@ def test_recommend_collects_all_candidates_before_sample(problem, monkeypatch):
     result = Picker(source).recommend(SearchCriteria(), count=5)
     assert [p.id for p in result.problems] == [1007,1008,1009,1010,1011]
     assert result.requested_count == result.returned_count == 5 and result.shortage == 0
+    assert result.fetched_count == result.eligible_count == 12
+    assert result.finished_at.tzinfo is not None and result.finished_at >= result.started_at
 
 
 def test_recommend_failure_does_not_sample(problem, monkeypatch):
@@ -115,6 +119,27 @@ def test_all_unknown_tiers_are_normal_empty_result(problem, operation):
     assert result.omitted_unknown_count == 1
 
 
+@pytest.mark.parametrize('operation', ['list','recommend'])
+@pytest.mark.parametrize('bounds,tiers', [(dict(min_tier=9,max_tier=13),(8,14)),
+    (dict(min_tier=9),(1,8)), (dict(max_tier=13),(14,30))])
+def test_all_rated_outside_site_bounds_remain_eligible(problem, monkeypatch, operation, bounds, tiers):
+    source = FixedSource([problem(tier=Rated(tiers[0])),problem(1001,tier=Rated(tiers[1]),accepted=Known(20))])
+    populations = []
+    def sample(items, k):
+        assert source.collected and k == 1
+        populations.append(items)
+        return items[-1:]
+    monkeypatch.setattr('random.sample',sample)
+    criteria = SearchCriteria(**bounds,min_rate=Decimal('40'),max_accepted=20)
+    options = dict(limit=1,sort='difficulty',order='desc') if operation == 'list' else dict(count=1)
+    result = getattr(Picker(source),operation)(criteria,**options)
+    assert result.fetched_count == result.eligible_count == 2
+    assert result.returned_count == 1 and result.shortage == result.omitted_unknown_count == 0
+    assert result.criteria == criteria and result.problems[0] is source.problems[1]
+    assert result.problems[0].tier == Rated(tiers[1])
+    assert populations == ([source.problems] if operation == 'recommend' else [])
+
+
 def test_sort_full_candidates_before_limit_keeps_unrated(problem):
     from algorithm_problem_picker.models import Unrated
     source = FixedSource([problem(1000, tier=Unrated()), problem(1001),
@@ -129,6 +154,23 @@ def test_accepted_filter_retains_listing_values(problem):
     result = Picker(source).list(SearchCriteria(min_accepted=5000))
     assert [p.id for p in result.problems] == [1000]
     assert result.problems[0] is source.problems[0]
+
+
+@pytest.mark.parametrize('operation', ['list','recommend'])
+@pytest.mark.parametrize('filters', [{},dict(min_rate=Decimal('0')),dict(max_rate=Decimal('100')),
+    dict(min_accepted=0),dict(max_accepted=0),dict(min_rate=Decimal('0'),max_accepted=0)])
+def test_missing_statistics_can_be_normal_empty_result(problem, operation, filters):
+    source = FixedSource([problem(rate=Unavailable(),accepted=Unavailable()),
+                          problem(1001,rate=Unavailable(),accepted=Unavailable())])
+    options = dict(limit=3) if operation == 'list' else dict(count=3)
+    result = getattr(Picker(source),operation)(SearchCriteria(**filters),**options)
+    assert result.fetched_count == 2
+    assert result.eligible_count == result.returned_count == (0 if filters else 2)
+    assert result.omitted_unknown_count == (2 if filters else 0)
+    assert result.shortage == (3-result.returned_count if operation == 'recommend' else 0)
+    if not filters:
+        assert set(result.problems) == set(source.problems)
+        assert all(item is source.problems[item.id-1000] for item in result.problems)
 
 
 @pytest.mark.parametrize('operation', ['list','recommend'])

@@ -26,7 +26,21 @@ def test_default_id_order_and_one_sided_bounds(problem):
     items = [problem(1002), problem(1000), problem(1001)]
     assert [p.id for p in selection.sort_problems(items)] == [1000, 1001, 1002]
     assert selection.filter_listing(items, SearchCriteria(max_rate=Decimal("47.44")))[0] == []
-    assert selection.filter_listing(items, SearchCriteria(min_tier=2))[0] == []
+    assert selection.filter_listing(items, SearchCriteria(min_tier=2))[0] == items
+
+
+@pytest.mark.parametrize('bounds', [dict(min_tier=9,max_tier=13),dict(min_tier=9),dict(max_tier=9)])
+@pytest.mark.parametrize('filters,expected', [({},[1000,1001,1002]),
+    (dict(min_rate=Decimal('40')),[1000,1001]), (dict(min_accepted=20),[1001,1002])])
+def test_rated_site_bounds_preserve_values_and_numeric_filters(problem, bounds, filters, expected):
+    items = [problem(tier=Rated(8)),problem(1001,tier=Rated(10),rate=Known(Decimal('80')),accepted=Known(20)),
+             problem(1002,tier=Rated(13),rate=Known(Decimal('10')),accepted=Known(30))]
+    eligible, omitted = selection.filter_listing(items,SearchCriteria(**bounds,**filters))
+    assert [item.id for item in eligible] == expected
+    assert omitted == 0
+    assert all(item is items[item.id-1000] for item in eligible)
+    assert [item.id for item in selection.sort_problems(eligible,'difficulty','asc')] == expected
+    assert [item.id for item in selection.sort_problems(eligible,'difficulty','desc')] == expected[::-1]
 
 
 @pytest.mark.parametrize('kwargs', [dict(min_tier=0), dict(max_tier=31),
@@ -95,12 +109,31 @@ def test_accepted_bounds(problem, bounds, expected):
     assert omitted == bool(bounds)
 
 
+@pytest.mark.parametrize('metric', ['rate','accepted'])
+@pytest.mark.parametrize('bounds,expected', [({},[1000,1001,1002]),({'min':1},[1001]),
+    ({'max':0},[1000]),({'min':0,'max':0},[1000])])
+def test_missing_statistics_are_not_zero(problem, metric, bounds, expected):
+    items = [problem(rate=Known(Decimal('0.00')),accepted=Known(0)),
+             problem(1001,rate=Known(Decimal('20')),accepted=Known(20)),
+             problem(1002,rate=Unavailable(),accepted=Unavailable())]
+    options = {boundary+'_'+metric:Decimal(value) if metric == 'rate' else value for boundary,value in bounds.items()}
+    eligible, omitted = selection.filter_listing(items+items[2:],SearchCriteria(**options))
+    assert [item.id for item in eligible] == expected
+    assert omitted == (1 if bounds else 0)
+
+
+def test_numeric_rejection_does_not_count_later_missing_statistic(problem):
+    items = [problem(rate=Known(Decimal('0')),accepted=Unavailable()),
+             problem(1001,rate=Unavailable(),accepted=Unavailable())]
+    assert selection.filter_listing(items+items,SearchCriteria(min_rate=Decimal('1'),min_accepted=0)) == ([],1)
+
+
 def test_unknown_count_stops_at_first_active_filter(problem):
     items = [problem(tier=Rated(1),rate=Unavailable(),accepted=Unavailable()),
              problem(1001,tier=Unavailable(),rate=Unavailable(),accepted=Unavailable()),
              problem(1002,tier=Unrated(),rate=Unavailable(),accepted=Unavailable()),
              problem(1003,tier=Rated(9),rate=Unavailable(),accepted=Unavailable())]
-    assert selection.filter_listing(items+items[:1],SearchCriteria(min_tier=9,min_rate=Decimal('0'),min_accepted=0)) == ([],2)
+    assert selection.filter_listing(items+items[:1],SearchCriteria(min_tier=9,min_rate=Decimal('0'),min_accepted=0)) == ([],3)
 
 
 @pytest.mark.parametrize('value', [-1,1.5,True])

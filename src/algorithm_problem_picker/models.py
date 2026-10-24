@@ -146,7 +146,7 @@ class UserReference:
 
 @dataclass(frozen=True)
 class CompletedListing:
-    """Created by a provider only after the last page has finished successfully."""
+    """Created only after the provider's collection completion criterion is met."""
 
     candidates: tuple[Problem, ...]
     completed_at: datetime = field(default_factory=now)
