@@ -130,7 +130,7 @@ US1 체크포인트 후 다음 네 테스트 작업은 서로 다른 파일에�
 - [X] T030 T029 후 `tests/test_selection.py`·`tests/test_service.py`·`tests/test_cli.py`·`tests/test_jungol_dom.py`를 `uv run --locked pytest -q`로 실행하고 `scripts/benchmark_selection.py` 결과와 함께 `specs/002-improve-list-collection/quickstart.md`에 기록한다; 실패·취소·접근 제한·브라우저 정리·정상 빈 결과를 포함해 SC-001~007을 확인하고 실패/미실행을 통과로 기록하지 않는다.
 - [X] T031 T030 후 `uv run --locked python scripts/benchmark_collection.py --baseline-ref c37208f5a80628df5d7126972d31461b2517177d --runs 3 --output specs/002-improve-list-collection/collection-benchmark.md`를 실행해 list/recommend 각각 baseline/current 최소 3회, 동일 후보·정상 완료·baseline 상세 양수/current 0·전체 시간 중앙값 감소를 확인한다; 원시 전체/목록 시간과 각 중앙값·환경·revision/dirty·해시를 보고서에 남기고 `specs/002-improve-list-collection/quickstart.md`에 링크와 판정을 추가하며 라이브 성능 개선율로 일반화하지 않는다 (FR-019, SC-008).
 - [X] T032 `specs/001-jungol-problem-picker/tasks.md`의 기존 T041·T042 수정 상태·근거를 확인하고 `tests/test_jungol_dom.py`·`tests/test_service.py`에서 요청 완료 후 지연된 행/사용자 결과, 빈 최종 로드·동일 핸들 갱신 경계의 재현 또는 선행 검증 결과를 대조해 `specs/002-improve-list-collection/quickstart.md`에 통합 수용 상태를 기록한다; 이 태스크는 평가·기록이며 별도 두 수정의 구현/완료 표시는 포함하지 않고, 근거가 없거나 결함이 남으면 관련 수용을 미통과로 남기며 고정 대기 증가로 대체하지 않는다 (FR-012~014, plan 통합 게이트).
-- [ ] T033 `specs/002-improve-list-collection/quickstart.md`·`plan.md`·`tasks.md`와 `README.md`를 최종 revision의 검증·성능 보고에 맞춰 정리하고 FR-001~020/SC-001~008의 근거·미실행·실패를 대조한다; T030·T031 통과와 T032의 외부 통합 수용 근거를 모두 확인한 경우에만 이 최종 태스크를 완료 표시하고, 미해결 T041·T042가 있으면 다른 구현·검증 기록은 보존하되 이 체크박스와 해당 통합 수용은 미완료로 남긴다.
+- [X] T033 `specs/002-improve-list-collection/quickstart.md`·`plan.md`·`tasks.md`와 `README.md`를 최종 revision의 검증·성능 보고에 맞춰 정리하고 FR-001~020/SC-001~008의 근거·미실행·실패를 대조한다; T030·T031 통과와 T032의 외부 통합 수용 근거를 모두 확인한 경우에만 이 최종 태스크를 완료 표시하고, 미해결 T041·T042가 있으면 다른 구현·검증 기록은 보존하되 이 체크박스와 해당 통합 수용은 미완료로 남긴다.
 
 **Checkpoint**: 전체 완료는 코드 변경·최소 회귀·성능 기준과 외부 통합 게이트가 실제로 충족된 경우에만 선언한다. 선택적 라이브 실행은 quickstart를 따라 수행 여부와 한계를 기록하며 미실행을 라이브 통과로 표시하지 않는다.
 
@@ -256,4 +256,10 @@ T026: README.md의 새 사용법·지표 의미·전환 표
 - 정답 열의 네 미제공 토큰은 합성 계약이다. 빈 값·새 표시를 임의로 정상 미확인으로 바꾸지 않는다.
 - 001/T041·T042의 상태를 평가하는 것은 두 수정의 구현 권한·완료 판정으로 확대하지 않는다.
 - 선택적 라이브 결과는 고정 기대값이나 성능 비교의 통제 자료로 사용하지 않는다. 실제 미실행은 미실행으로 기록한다.
-- 생성 시점에는 구현/검증을 수행하지 않았으며, 실제 실행 결과는 [quickstart.md](quickstart.md)에 기록했다. T033은 별도 001/T041·T042 수정·검증까지 미완료로 유지한다.
+- 생성 시점에는 구현/검증을 수행하지 않았으며, 실제 실행 결과는 [quickstart.md](quickstart.md)에 기록했다. 최초 구현 당시 T033은 별도 001/T041·T042 수정·검증을 기다리며 미완료로 남겼다.
+
+## T033 마감 (2026-10-24)
+
+- **T001~T033 모두 완료**. 검토 기준은 `003-align-site-listing`의 HEAD `e9a702a7cf7c333212717b26dade5b95c025e3a2`이며 시작 작업 트리는 깨끗했다.
+- T030의 회귀·T031의 고정 HTML 성능 보고와 이후 001/T041·T042 수정·검증, 003의 전체 회귀·실사이트 수용 근거를 대조했다. 요구사항별 판정과 제약은 [T033 마감 기록](quickstart.md#t033-마감-2026-10-24)에 있다.
+- 002 당시 실패·xfail·성능 수치는 과거 이력으로 보존한다. 003에서 대체한 티어·빈 통계·더 불러오기 종료 정책을 002의 옛 기대값으로 다시 검증하거나 과거 성능을 현재 revision의 측정으로 표시하지 않는다.
