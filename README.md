@@ -16,27 +16,27 @@ uv run jpick --version
 ## 사용법
 
 ```powershell
-# 티어 1, 정답률 80% 이상인 전체 후보를 확인하고 5개 표시
-uv run jpick list --min-tier 1 --max-tier 1 --min-rate 80 --limit 5
+# 티어 B5, 정답률 80% 이상인 전체 후보를 확인하고 5개 표시
+uv run jpick list --min-tier B5 --max-tier B5 --min-rate 80 --limit 5
 
 # 정답률이 높은 순서 (동점은 번호 오름차순)
-uv run jpick list --min-tier 1 --max-tier 1 --min-rate 80 --sort rate --order desc
+uv run jpick list --min-tier B5 --max-tier B5 --min-rate 80 --sort rate --order desc
 
 # 정답 제출 10건 이상인 전체 적격 후보에서 3개 추천 (중복 정답 제출 포함)
-uv run jpick recommend --min-tier 1 --max-tier 1 --min-rate 80 --min-accepted 10 --count 3
+uv run jpick recommend --min-tier B5 --max-tier B5 --min-rate 80 --min-accepted 10 --count 3
 
 # 정답 제출 수가 많은 순서
-uv run jpick list --min-tier 1 --max-tier 1 --sort accepted --order desc --limit 5
+uv run jpick list --min-tier B5 --max-tier B5 --sort accepted --order desc --limit 5
 
 # 지정한 공개 사용자가 푼 문제 / 아직 정답 처리하지 않은 문제
 uv run jpick list --user JUNGOL --status solved
-uv run jpick list --user '@JUNGOL' --status unsolved --min-tier 1 --max-tier 1 --min-rate 80
+uv run jpick list --user '@JUNGOL' --status unsolved --min-tier B5 --max-tier B5 --min-rate 80
 
 # 범위 옵션으로 같은 조건을 짧게 지정 (양 끝 포함)
-uv run jpick list --tier 9..13 --rate 40.5..80 --accepted 500..1000 --sort accepted --order desc --limit 5
+uv run jpick list --tier S2..G3 --rate 40.5..80 --accepted 500..1000 --sort accepted --order desc --limit 5
 
 # 하한·상한 중 필요한 쪽만 지정해서 3개 추천
-uv run jpick recommend --tier 9.. --rate ..80 --accepted 500.. --count 3
+uv run jpick recommend --tier S2.. --rate ..80 --accepted 500.. --count 3
 
 # 명시한 번호만 기본 브라우저로 열기 (1000은 한 번만 전달)
 uv run jpick open 1000 1000 1001
@@ -44,10 +44,10 @@ uv run jpick open 1000 1000 1001
 
 | 옵션 | 값 / 기본값 |
 |---|---|
-| `--tier` | 사이트 티어 검색 조건 1~30 정수 범위. 예: `9..13`, `9..`, `..13` |
+| `--tier` | 사이트 티어 검색 조건 B5~R1 범위. 예: `S5..G1`, `G5..`, `..S1`. 기존 1~30도 지원 |
 | `--rate` | 정답률 0~100 정수·소수 범위, % 없이. 예: `40.5..80` |
 | `--accepted` | 정답 제출 수 0 이상 정수 범위, 중복 정답 제출 포함. 예: `500..1000` |
-| `--min-tier`, `--max-tier` | 사이트 티어 검색 조건 1~30. 1=Bronze V, 30=Ruby I |
+| `--min-tier`, `--max-tier` | 사이트 티어 검색 조건 B5~R1. 대소문자 무관, 기존 1~30도 지원 |
 | `--min-rate`, `--max-rate` | 소수 0~100, % 기호 없이 |
 | `--min-accepted`, `--max-accepted` | 0 이상의 정수, 동일 사용자의 중복 정답 제출을 포함한 정답 제출 수 |
 | `--status` | `all`(기본), `solved`, `unsolved` |
@@ -59,9 +59,22 @@ uv run jpick open 1000 1000 1001
 
 세 범위 옵션은 `MIN..MAX`, `MIN..`, `..MAX` 형태로 양 끝을 포함한다. 같은 경계는 `--accepted 500..500`, 실제 0은 `--accepted 0..0`처럼 지정한다. `--accepted=500..1000`처럼 등호로 값을 전달해도 된다. 각 범위 옵션은 한 번만 사용할 수 있다.
 
-기존 여섯 `--min-*`·`--max-*` 옵션은 계속 지원한다. 같은 지표의 신·구 옵션은 값이 같아도 혼용할 수 없다. 예를 들어 `--accepted 500.. --max-accepted 1000`은 오류지만 `--tier 9..13 --min-rate 40.5 --accepted 500..`처럼 서로 다른 지표의 표기는 섞어 쓸 수 있다.
+티어는 `B`(Bronze), `S`(Silver), `G`(Gold), `P`(Platinum), `D`(Diamond), `R`(Ruby)에 단계 `5`~`1`을 붙인다. 각 티어 안에서는 5가 가장 쉽고 1이 가장 어렵다. 입력은 대소문자를 구분하지 않으며, 결과의 난이도와 조건 요약은 대문자 약칭으로 표시한다. 미정·미확인 표시는 유지한다.
 
-숫자는 ASCII 숫자를 사용하고 정답률만 소수점 앞뒤에 숫자가 있는 소수를 허용한다. `500`처럼 숫자 하나만 쓰거나 `..`처럼 두 경계를 모두 생략하면 오류다. 하한이 상한보다 크거나 수치 범위를 벗어난 값, 음수·부호·쉼표·공백·%·지수 표기·티어 이름·NaN/Infinity는 새 범위 옵션에서 허용하지 않는다. 잘못된 범위·동일 지표 혼용·반복은 조회 시작 전에 종료 코드 2로 안내한다. 기존 경계 옵션의 입력 규칙은 그대로다.
+| 티어 | 기존 숫자와 약칭 (쉬운 순서) |
+|---|---|
+| Bronze | 1=B5, 2=B4, 3=B3, 4=B2, 5=B1 |
+| Silver | 6=S5, 7=S4, 8=S3, 9=S2, 10=S1 |
+| Gold | 11=G5, 12=G4, 13=G3, 14=G2, 15=G1 |
+| Platinum | 16=P5, 17=P4, 18=P3, 19=P2, 20=P1 |
+| Diamond | 21=D5, 22=D4, 23=D3, 24=D2, 25=D1 |
+| Ruby | 26=R5, 27=R4, 28=R3, 29=R2, 30=R1 |
+
+기존 숫자 입력도 계속 지원하며 `--tier S5..15`처럼 한 범위 안에서 약칭과 숫자를 섞을 수 있다. `--tier B1..B5`는 하한이 상한보다 어려우므로 오류다. 같은 난이도는 `--tier B5..B5`로 지정한다.
+
+기존 여섯 `--min-*`·`--max-*` 옵션은 계속 지원한다. 같은 지표의 신·구 옵션은 값이 같아도 혼용할 수 없다. 예를 들어 `--accepted 500.. --max-accepted 1000`은 오류지만 `--tier S2..G3 --min-rate 40.5 --accepted 500..`처럼 서로 다른 지표의 표기는 섞어 쓸 수 있다.
+
+숫자는 ASCII 숫자를 사용하고 정답률만 소수점 앞뒤에 숫자가 있는 소수를 허용한다. `500`이나 `B5`처럼 범위 옵션에 값 하나만 쓰거나 `..`처럼 두 경계를 모두 생략하면 오류다. 하한이 상한보다 크거나 수치 범위를 벗어난 값, 음수·부호·쉼표·공백·%·지수 표기·전체 티어 이름(`Bronze V` 등)·NaN/Infinity는 새 범위 옵션에서 허용하지 않는다. 잘못된 범위·동일 지표 혼용·반복은 조회 시작 전에 종료 코드 2로 안내한다. 티어 외 기존 경계 옵션의 입력 규칙은 그대로다.
 
 모든 범위는 양 끝을 포함하고 생략한 경계는 제한하지 않는다. 티어 옵션은 사이트에 전달하는 검색 조건이다. 사이트가 제공한 확정 티어가 요청 범위 밖이어도 수집·추천 후보에 보존하고 실제 표시 티어를 그대로 사용한다. 티어 범위가 있으면 정상 미정·미확인 티어는 후보에서 제외한다. 요청한 검색 조건이 손실되거나 표시 구조·값을 해석할 수 없으면 진단과 함께 중단한다.
 

@@ -16,12 +16,15 @@ from .ports import SourceError
 from .service import Picker
 
 app = typer.Typer(invoke_without_command=True, no_args_is_help=True,
-                  help="JUNGOL 문제 검색·추천. 티어 1=Bronze V, 30=Ruby I.")
+                  help="JUNGOL 문제 검색·추천. 티어 B5=Bronze V ~ R1=Ruby I (기존 1~30도 지원).")
 out = Console(highlight=False, markup=False)
 err = Console(stderr=True, highlight=False, markup=False)
 
-TierOption = Annotated[int | None, typer.Option(min=1, max=30,
-    help="사이트 검색 조건인 티어 경계 1=Bronze V ~ 30=Ruby I (포함). 표시 티어는 범위 밖일 수 있습니다.")]
+_TIER_NAMES = tuple(f'{group}{level}' for group in 'BSGPDR' for level in range(5, 0, -1))
+_TIER_VALUES = {name: value for value, name in enumerate(_TIER_NAMES, start=1)}
+
+TierOption = Annotated[str | None, typer.Option(
+    help="사이트 검색 조건인 티어 경계 B5~R1, 대소문자 무관 (기존 1~30도 지원, 포함). 표시 티어는 범위 밖일 수 있습니다.")]
 RateOption = Annotated[str | None, typer.Option(help="정답률 0~100 소수, % 없이 (포함)")]
 AcceptedOption = Annotated[int | None, typer.Option(min=0, help="정답 제출 수, 동일 사용자의 중복 정답 제출 포함 (경계 포함)")]
 StatusOption = Annotated[Status, typer.Option(help="공개 기준 사용자 풀이 여부")]
@@ -35,25 +38,45 @@ def _single_range(value: list[str]) -> list[str]:
 
 
 TierRangeOption = Annotated[list[str], typer.Option(callback=_single_range, metavar="MIN..MAX",
-    help="사이트 티어 검색 조건 1~30 정수. 표시 티어는 범위 밖일 수 있습니다.")]
+    help="사이트 검색 조건 B5~R1, 대소문자 무관 (기존 1~30도 지원). 예: S5..G1, G5.., ..S1. 표시 티어는 범위 밖일 수 있습니다.")]
 RateRangeOption = Annotated[list[str], typer.Option(callback=_single_range, metavar="MIN..MAX",
     help="정답률 0~100 소수, % 없이")]
 AcceptedRangeOption = Annotated[list[str], typer.Option(callback=_single_range, metavar="MIN..MAX",
     help="정답 제출 수 0 이상 정수, 동일 사용자의 중복 정답 제출 포함")]
 
 
-def _parse_range(value: str, option: str, minimum: int, maximum: int | None,
-                 decimal: bool = False) -> tuple[int | Decimal | None, int | Decimal | None]:
+def _parse_tier(value: str, option: str) -> int:
+    name = value.upper()
+    if name in _TIER_VALUES:
+        return _TIER_VALUES[name]
+    if re.fullmatch(r'[0-9]+', value) and 1 <= int(value) <= 30:
+        return int(value)
+    raise typer.BadParameter("티어 경계는 B/S/G/P/D/R + 1~5 또는 정수 1~30이어야 합니다. "
+                             "예: B5, S1, G5, R1", param_hint=option)
+
+
+def _format_tier(value: int) -> str:
+    return _TIER_NAMES[value - 1]
+
+
+def _parse_range(value: str, metric: str) -> tuple[int | Decimal | None, int | Decimal | None]:
+    option = f'--{metric}'
     parts = value.split('..')
-    pattern = r'[0-9]+(?:\.[0-9]+)?' if decimal else r'[0-9]+'
-    if len(parts) != 2 or not any(parts) or any(part and not re.fullmatch(pattern, part) for part in parts):
+    if len(parts) != 2 or not any(parts):
         raise typer.BadParameter("범위는 MIN..MAX, MIN.., ..MAX 형태로 지정하세요. 예: 1..10", param_hint=option)
-    convert = Decimal if decimal else int
-    lower, upper = (convert(part) if part else None for part in parts)
-    if any(bound is not None and (bound < minimum or (maximum is not None and bound > maximum))
-           for bound in (lower, upper)):
-        allowed = f"{minimum}~{maximum}" if maximum is not None else f"{minimum} 이상"
-        raise typer.BadParameter(f"경계는 {allowed}이어야 합니다.", param_hint=option)
+    if metric == 'tier':
+        lower, upper = (_parse_tier(part, option) if part else None for part in parts)
+    else:
+        pattern = r'[0-9]+(?:\.[0-9]+)?' if metric == 'rate' else r'[0-9]+'
+        if any(part and not re.fullmatch(pattern, part) for part in parts):
+            raise typer.BadParameter("범위는 MIN..MAX, MIN.., ..MAX 형태로 지정하세요. 예: 1..10", param_hint=option)
+        convert = Decimal if metric == 'rate' else int
+        lower, upper = (convert(part) if part else None for part in parts)
+        maximum = 100 if metric == 'rate' else None
+        if any(bound is not None and (bound < 0 or (maximum is not None and bound > maximum))
+               for bound in (lower, upper)):
+            allowed = f"0~{maximum}" if maximum is not None else "0 이상"
+            raise typer.BadParameter(f"경계는 {allowed}이어야 합니다.", param_hint=option)
     if lower is not None and upper is not None and lower > upper:
         raise typer.BadParameter("하한은 상한 이하여야 합니다.", param_hint=option)
     return lower, upper
@@ -61,15 +84,16 @@ def _parse_range(value: str, option: str, minimum: int, maximum: int | None,
 
 def _range_bounds(values: list[str], lower, upper, metric: str) -> tuple:
     if not values:
+        if metric == 'tier':
+            return (_parse_tier(lower, '--min-tier') if lower is not None else None,
+                    _parse_tier(upper, '--max-tier') if upper is not None else None)
         return lower, upper
     option = f'--{metric}'
     conflicts = [f'--{name}-{metric}' for name, value in (('min', lower), ('max', upper)) if value is not None]
     if conflicts:
         raise typer.BadParameter(f"{', '.join(conflicts)}와 함께 지정할 수 없습니다. 한 가지 표기만 사용하세요.",
                                  param_hint=option)
-    minimum = 1 if metric == 'tier' else 0
-    maximum = 30 if metric == 'tier' else 100 if metric == 'rate' else None
-    return _parse_range(values[0], option, minimum, maximum, decimal=metric == 'rate')
+    return _parse_range(values[0], metric)
 
 _LISTING_HELP = (
     "범위 옵션은 MIN..MAX, MIN.., ..MAX 형태로 양 끝 포함이며 한 번만 지정합니다. "
@@ -128,7 +152,7 @@ def _present(result: Result, recommend: bool = False) -> None:
     table.columns[-1].overflow = 'ignore'
     table.columns[1].overflow = 'fold'
     for problem in result.problems:
-        tier = str(problem.tier.value) if isinstance(problem.tier, Rated) else (
+        tier = _format_tier(problem.tier.value) if isinstance(problem.tier, Rated) else (
             "미정" if isinstance(problem.tier, Unrated) else "미확인")
         table.add_row(str(problem.id), problem.title, tier, _metric(problem.pass_rate, "%"),
                       _metric(problem.accepted_count), problem.url)
@@ -140,6 +164,8 @@ def _present(result: Result, recommend: bool = False) -> None:
     for name in ("min_tier", "max_tier", "min_rate", "max_rate", "min_accepted", "max_accepted"):
         value = getattr(result.criteria, name)
         if value is not None:
+            if name in ('min_tier', 'max_tier'):
+                value = _format_tier(value)
             conditions.append(f"{name}={value}")
     conditions.append(f"status={result.criteria.status}")
     if result.user:

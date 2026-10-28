@@ -10,6 +10,12 @@ from algorithm_problem_picker.ports import SourceAccessError, SourceSchemaError,
 
 runner = CliRunner()
 
+TIER_NAMES = (
+    'B5', 'B4', 'B3', 'B2', 'B1', 'S5', 'S4', 'S3', 'S2', 'S1',
+    'G5', 'G4', 'G3', 'G2', 'G1', 'P5', 'P4', 'P3', 'P2', 'P1',
+    'D5', 'D4', 'D3', 'D2', 'D1', 'R5', 'R4', 'R3', 'R2', 'R1',
+)
+
 
 def _problem_ids(output):
     return [int(value) for value in re.findall(r'^\s*(\d+)\s+문제 ', output, re.MULTILINE)]
@@ -83,6 +89,66 @@ def test_common_filters_and_exact_user_reach_service(source_factory, monkeypatch
     assert criteria.min_accepted == 0 and criteria.max_accepted == 100
     assert criteria.status == 'solved' and criteria.user_handle == 'Case'
     assert '@Case' in result.stdout
+
+
+@pytest.mark.parametrize('command', ['list', 'recommend'])
+@pytest.mark.parametrize('number,name', tuple(enumerate(TIER_NAMES, start=1)))
+def test_tier_abbreviations_match_numeric_criteria(source_factory, command, number, name):
+    _, calls = source_factory
+    for arguments in (['--tier', f'{name}..{name.lower()}'],
+                      ['--min-tier', name.lower(), '--max-tier', str(number)]):
+        calls.clear()
+        result = runner.invoke(cli.app, [command, *arguments], terminal_width=180)
+        assert result.exit_code == 0, result.output
+        criteria = next(call for call in calls if isinstance(call, SearchCriteria))
+        assert criteria == SearchCriteria(min_tier=number, max_tier=number)
+        assert f'min_tier={name}' in result.stdout and f'max_tier={name}' in result.stdout
+
+
+@pytest.mark.parametrize('command', ['list', 'recommend'])
+@pytest.mark.parametrize('value,lower,upper', [
+    ('S5..G1', 6, 15), ('g5..', 11, None), ('..s1', None, 10),
+    ('S5..15', 6, 15), ('6..g1', 6, 15),
+])
+def test_tier_abbreviation_ranges(source_factory, command, value, lower, upper):
+    _, calls = source_factory
+    result = runner.invoke(cli.app, [command, '--tier', value])
+    assert result.exit_code == 0, result.output
+    assert next(call for call in calls if isinstance(call, SearchCriteria)) == SearchCriteria(lower, upper)
+
+
+@pytest.mark.parametrize('command', ['list', 'recommend'])
+@pytest.mark.parametrize('arguments,option', [
+    (['--tier', 'B0..S1'], '--tier'), (['--tier', 'B6..S1'], '--tier'),
+    (['--tier', 'X5..S1'], '--tier'), (['--tier', 'B05..S1'], '--tier'),
+    (['--tier', 'G1..S5'], '--tier'), (['--tier', 'B1..B5'], '--tier'),
+    (['--min-tier', ' B5'], '--min-tier'), (['--max-tier', 'R2 '], '--max-tier'),
+    (['--min-tier', 'Silver1'], '--min-tier'), (['--max-tier', 'S１'], '--max-tier'),
+    (['--tier', 'S5..G1', '--min-tier', 'S5'], '--tier'),
+    (['--tier', 'B5..B1', '--tier', 'S5..S1'], '--tier'),
+])
+def test_invalid_tier_abbreviations_before_source(source_factory, command, arguments, option):
+    _, calls = source_factory
+    result = runner.invoke(cli.app, [command, *arguments], terminal_width=180)
+    assert result.exit_code == 2 and not calls and not result.stdout
+    assert option in result.stderr and '조회 시작' not in result.stderr
+
+
+@pytest.mark.parametrize('command', ['list', 'recommend'])
+def test_all_tier_names_and_unrated_output(source_factory, monkeypatch, problem, command):
+    from rich.console import Console
+    from algorithm_problem_picker.models import Unavailable, Unrated
+    source, _ = source_factory
+    items = tuple(problem(1000+i, tier=Rated(i+1)) for i in range(30)) + (
+        problem(1030, tier=Unrated()), problem(1031, tier=Unavailable()))
+    monkeypatch.setattr(source, 'collect', lambda *args: CompletedListing(items))
+    monkeypatch.setattr(cli, 'out', Console(width=180, highlight=False, markup=False))
+    extra = ['--limit', '32'] if command == 'list' else ['--count', '32']
+    result = runner.invoke(cli.app, [command, *extra])
+    assert result.exit_code == 0, result.output
+    rows = {int(parts[0]): parts[3] for line in result.stdout.splitlines()
+            if re.match(r'^\s*10[0-3][0-9]\s+문제 ', line) and (parts := line.split())}
+    assert [rows[1000+i] for i in range(32)] == [*TIER_NAMES, '미정', '미확인']
 
 
 @pytest.mark.parametrize('command', ['list', 'recommend'])
@@ -325,6 +391,7 @@ def test_tier_help_explains_site_search(source_factory, command):
     assert result.exit_code == 0 and not calls
     message = ' '.join(result.stdout.replace('│','').split())
     assert '사이트 검색 조건' in message
+    assert 'B5~R1' in message and '대소문자 무관' in message and 'S5..G1' in message
     assert '표시 티어' in message and '범위 밖' in message
     assert '미제공' in message and '실제 0' in message and '미확인' in message
     assert '버튼이 없으면 현재 목록' in message and '지연 반영' in message
@@ -342,9 +409,9 @@ def test_site_tier_bounds_and_observed_tier_output(source_factory, monkeypatch, 
     assert result.exit_code == 0, result.exception
     assert '조회 1' in result.stdout and '적격 1' in result.stdout
     row = next(line for line in result.stdout.splitlines() if line.lstrip().startswith('1000 '))
-    assert row.split()[:4] == ['1000','문제','1000','8']
+    assert row.split()[:4] == ['1000','문제','1000','S3']
     for option, value in zip(bounds[::2],bounds[1::2]):
-        assert option[2:].replace('-','_')+'='+value in result.stdout
+        assert option[2:].replace('-','_')+'='+TIER_NAMES[int(value)-1] in result.stdout
     assert '티어' not in result.stderr and '경고' not in result.stderr
     assert calls[-1] == 'closed'
 
