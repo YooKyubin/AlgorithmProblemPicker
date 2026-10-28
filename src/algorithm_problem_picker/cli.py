@@ -2,6 +2,7 @@
 
 from importlib.metadata import version
 from decimal import Decimal, InvalidOperation
+import re
 import webbrowser
 from typing import Annotated
 
@@ -26,7 +27,53 @@ AcceptedOption = Annotated[int | None, typer.Option(min=0, help="정답 제출 �
 StatusOption = Annotated[Status, typer.Option(help="공개 기준 사용자 풀이 여부")]
 UserOption = Annotated[str, typer.Option("--user", help="정확한 공개 핸들. @ 접두사 허용")]
 
+
+def _single_range(value: list[str]) -> list[str]:
+    if len(value) > 1:
+        raise typer.BadParameter("범위 옵션은 한 번만 지정하세요.")
+    return value
+
+
+TierRangeOption = Annotated[list[str], typer.Option(callback=_single_range, metavar="MIN..MAX",
+    help="사이트 티어 검색 조건 1~30 정수. 표시 티어는 범위 밖일 수 있습니다.")]
+RateRangeOption = Annotated[list[str], typer.Option(callback=_single_range, metavar="MIN..MAX",
+    help="정답률 0~100 소수, % 없이")]
+AcceptedRangeOption = Annotated[list[str], typer.Option(callback=_single_range, metavar="MIN..MAX",
+    help="정답 제출 수 0 이상 정수, 동일 사용자의 중복 정답 제출 포함")]
+
+
+def _parse_range(value: str, option: str, minimum: int, maximum: int | None,
+                 decimal: bool = False) -> tuple[int | Decimal | None, int | Decimal | None]:
+    parts = value.split('..')
+    pattern = r'[0-9]+(?:\.[0-9]+)?' if decimal else r'[0-9]+'
+    if len(parts) != 2 or not any(parts) or any(part and not re.fullmatch(pattern, part) for part in parts):
+        raise typer.BadParameter("범위는 MIN..MAX, MIN.., ..MAX 형태로 지정하세요. 예: 1..10", param_hint=option)
+    convert = Decimal if decimal else int
+    lower, upper = (convert(part) if part else None for part in parts)
+    if any(bound is not None and (bound < minimum or (maximum is not None and bound > maximum))
+           for bound in (lower, upper)):
+        allowed = f"{minimum}~{maximum}" if maximum is not None else f"{minimum} 이상"
+        raise typer.BadParameter(f"경계는 {allowed}이어야 합니다.", param_hint=option)
+    if lower is not None and upper is not None and lower > upper:
+        raise typer.BadParameter("하한은 상한 이하여야 합니다.", param_hint=option)
+    return lower, upper
+
+
+def _range_bounds(values: list[str], lower, upper, metric: str) -> tuple:
+    if not values:
+        return lower, upper
+    option = f'--{metric}'
+    conflicts = [f'--{name}-{metric}' for name, value in (('min', lower), ('max', upper)) if value is not None]
+    if conflicts:
+        raise typer.BadParameter(f"{', '.join(conflicts)}와 함께 지정할 수 없습니다. 한 가지 표기만 사용하세요.",
+                                 param_hint=option)
+    minimum = 1 if metric == 'tier' else 0
+    maximum = 30 if metric == 'tier' else 100 if metric == 'rate' else None
+    return _parse_range(values[0], option, minimum, maximum, decimal=metric == 'rate')
+
 _LISTING_HELP = (
+    "범위 옵션은 MIN..MAX, MIN.., ..MAX 형태로 양 끝 포함이며 한 번만 지정합니다. "
+    "기존 --min-*/--max-* 옵션은 유지하며 같은 지표의 범위 옵션과 혼용할 수 없습니다. "
     "명시적인 빈 통계는 미제공이며 실제 0과 다릅니다. 해당 지표 필터가 있으면 제외하고 없으면 미확인으로 표시합니다. "
     "더 불러오기 버튼이 없으면 현재 목록으로 완료하며 이후 지연 반영은 보장하지 않습니다."
 )
@@ -53,7 +100,11 @@ def main(show_version: bool = typer.Option(False, "--version", is_eager=True)) -
         raise typer.Exit()
 
 
-def _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user) -> SearchCriteria:
+def _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
+              *, tier: list[str], rate: list[str], accepted: list[str]) -> SearchCriteria:
+    min_tier, max_tier = _range_bounds(tier, min_tier, max_tier, 'tier')
+    min_rate, max_rate = _range_bounds(rate, min_rate, max_rate, 'rate')
+    min_accepted, max_accepted = _range_bounds(accepted, min_accepted, max_accepted, 'accepted')
     try:
         return SearchCriteria(min_tier, max_tier,
                               Decimal(min_rate) if min_rate is not None else None,
@@ -124,6 +175,7 @@ def _run(criteria: SearchCriteria, requested: int, recommend: bool = False,
 @app.command("list", help="전체 후보를 조회합니다. 티어는 사이트 검색 조건이며 표시 티어는 요청 범위 밖일 수 있습니다.",
              epilog=_LISTING_HELP)
 def list_command(
+    tier: TierRangeOption = [], rate: RateRangeOption = [], accepted: AcceptedRangeOption = [],
     min_tier: TierOption = None, max_tier: TierOption = None,
     min_rate: RateOption = None, max_rate: RateOption = None,
     min_accepted: AcceptedOption = None, max_accepted: AcceptedOption = None,
@@ -139,7 +191,8 @@ def list_command(
         sort_key = SortKey(sort)
     except ValueError as error:
         raise typer.BadParameter('정렬 기준: id, difficulty, rate, accepted, random', param_hint='--sort') from error
-    criteria = _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user)
+    criteria = _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
+                         tier=tier, rate=rate, accepted=accepted)
     if sort_key == SortKey.RANDOM and order == Order.DESC:
         raise typer.BadParameter("random과 --order desc를 함께 지정할 수 없습니다.")
     _run(criteria, limit, sort=sort_key, order=order)
@@ -148,6 +201,7 @@ def list_command(
 @app.command(help="전체 적격 후보에서 중복 없이 추천. 티어는 사이트 검색 조건이며 표시 티어는 요청 범위 밖일 수 있습니다.",
              epilog=_LISTING_HELP)
 def recommend(
+    tier: TierRangeOption = [], rate: RateRangeOption = [], accepted: AcceptedRangeOption = [],
     min_tier: TierOption = None, max_tier: TierOption = None,
     min_rate: RateOption = None, max_rate: RateOption = None,
     min_accepted: AcceptedOption = None, max_accepted: AcceptedOption = None,
@@ -156,7 +210,8 @@ def recommend(
     status: StatusOption = Status.ALL, user: UserOption = "",
     count: Annotated[int, typer.Option(min=1, help="추천 개수")] = 1,
 ) -> None:
-    criteria = _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user)
+    criteria = _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
+                         tier=tier, rate=rate, accepted=accepted)
     _run(criteria, count, recommend=True)
 
 
