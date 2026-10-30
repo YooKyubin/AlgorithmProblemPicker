@@ -151,10 +151,10 @@
 
 **Purpose**: 현재 사용 자료·내보내기·최종 수용 결과를 정합화한다.
 
-- [ ] T031 [P] `README.md`의 현재 실행 예시를 algo-pick으로 변경하고 `--platform`의 명령 앞 위치·jungol 기본값/단독 실지원·기본 조회/명시 추천/직접 열기 예시·지원 필터/값/미지원 오류와 jpick 실행 키 변경을 안내한다. 패키지/모듈 이름·정올 데이터 의미는 유지하며 프로그래머스 수집이 제공된다고 쓰지 않는다.
-- [ ] T032 [P] `docs/integration.md`·`docs/standalone.md`의 설치/실행/배포 예시를 algo-pick·`tools/algo-pick`으로 정리하고 플랫폼 위치·기본값·필터 지원 확인법·새 수집기 미제공 범위를 맞춘다. 과거 specs/검증 이력을 일괄 개명하거나 기존 외부 복사본 폴더를 이동하지 않는다.
-- [ ] T033 [P] `examples/vscode/tasks.json`·`scripts/export_tool.py`의 현재 실행 이름/예시 폴더/도움말을 algo-pick으로 변경하고 VS Code input ID와 참조를 함께 맞춘다. `tests/test_export_tool.py`의 기존 템플릿 경로 기대·fixture만 필요한 만큼 조정해 새 모듈을 포함하는 기존 src 전체 내보내기·무덮어쓰기·해시/메타데이터·캐시/환경 제외 계약을 재사용한다. 문서 전용 테스트는 추가하지 않는다.
-- [ ] T034 `specs/005-platform-filter-validation/quickstart.md`의 기본 수용을 수행한다. 관련 `tests/test_platforms.py`·`tests/test_cli.py`·`tests/test_selection.py`·`tests/test_service.py`·`tests/test_export_tool.py` 확인 후 `uv run --locked pytest -q`를 한 번 실행하고 설치 console_scripts·help/version·접속 없는 오류·현재 문서/VS Code 참조를 점검한다. 기존 환경이 허용하면 존재하지 않는 `dist/algo-pick-005-validation` 또는 다른 새 경로로 `scripts/export_tool.py`를 실행해 독립 복사본 sync·새 명령 version/help를 확인한다. `plan.md`의 FR-001~016/SC-001~006 추적표에 맞춰 실제 결과·환경 제약·선택적 미실행을 quickstart에 기록한다. 기본 수용은 원격/실제 브라우저 호출 없이 완료하며 선택적 실사이트 절차는 별도로 구분한다. 새 변경·실패가 없으면 전체 검증을 반복하지 않는다.
+- [X] T031 [P] `README.md`의 현재 실행 예시를 algo-pick으로 변경하고 `--platform`의 명령 앞 위치·jungol 기본값/단독 실지원·기본 조회/명시 추천/직접 열기 예시·지원 필터/값/미지원 오류와 jpick 실행 키 변경을 안내한다. 패키지/모듈 이름·정올 데이터 의미는 유지하며 프로그래머스 수집이 제공된다고 쓰지 않는다.
+- [X] T032 [P] `docs/integration.md`·`docs/standalone.md`의 설치/실행/배포 예시를 algo-pick·`tools/algo-pick`으로 정리하고 플랫폼 위치·기본값·필터 지원 확인법·새 수집기 미제공 범위를 맞춘다. 과거 specs/검증 이력을 일괄 개명하거나 기존 외부 복사본 폴더를 이동하지 않는다.
+- [X] T033 [P] `examples/vscode/tasks.json`·`scripts/export_tool.py`의 현재 실행 이름/예시 폴더/도움말을 algo-pick으로 변경하고 VS Code input ID와 참조를 함께 맞춘다. `tests/test_export_tool.py`의 기존 템플릿 경로 기대·fixture만 필요한 만큼 조정해 새 모듈을 포함하는 기존 src 전체 내보내기·무덮어쓰기·해시/메타데이터·캐시/환경 제외 계약을 재사용한다. 문서 전용 테스트는 추가하지 않는다.
+- [X] T034 `specs/005-platform-filter-validation/quickstart.md`의 기본 수용을 수행한다. 관련 `tests/test_platforms.py`·`tests/test_cli.py`·`tests/test_selection.py`·`tests/test_service.py`·`tests/test_export_tool.py` 확인 후 `uv run --locked pytest -q`를 한 번 실행하고 설치 console_scripts·help/version·접속 없는 오류·현재 문서/VS Code 참조를 점검한다. 기존 환경이 허용하면 존재하지 않는 `dist/algo-pick-005-validation` 또는 다른 새 경로로 `scripts/export_tool.py`를 실행해 독립 복사본 sync·새 명령 version/help를 확인한다. `plan.md`의 FR-001~016/SC-001~006 추적표에 맞춰 실제 결과·환경 제약·선택적 미실행을 quickstart에 기록한다. 기본 수용은 원격/실제 브라우저 호출 없이 완료하며 선택적 실사이트 절차는 별도로 구분한다. 새 변경·실패가 없으면 전체 검증을 반복하지 않는다.
 
 **Checkpoint**: 현재 사용자 자료와 설치 실행 키가 일치하고 모든 스토리의 실제 검증 근거가 남는다.
 

@@ -1,6 +1,10 @@
-# JUNGOL 문제 검색·추천 CLI
+# algo-pick 문제 검색·추천 CLI
 
-`jpick`은 정올의 공개 일반 문제를 조건으로 조회하고, 전체 적격 후보에서 중복 없이 추천하는 개인용 Python CLI다. Python 3.12 이상과 uv, Chromium을 사용한다.
+`algo-pick`은 정올의 공개 일반 문제를 조건으로 조회하고, 전체 적격 후보에서 중복 없이 추천하는 개인용 Python CLI다. Python 3.12 이상과 uv, Chromium을 사용한다.
+
+`--platform`을 생략하면 `jungol`을 사용하며, 현재 실제 지원 플랫폼은 소문자 `jungol` 하나다. 플랫폼은 `algo-pick --platform jungol list`처럼 **명령 앞에** 지정한다. 프로그래머스 수집기는 제공하지 않는다.
+
+설치 실행 이름은 `jpick`에서 `algo-pick`으로 변경했다. 배포 패키지 `algorithm-problem-picker`와 내부 모듈 `algorithm_problem_picker`는 유지하며, 이전 실행 이름의 호환 별칭은 제공하지 않는다. 기존 환경에 남은 옛 실행 파일은 자동 삭제하지 않는다.
 
 ## 설치
 
@@ -9,17 +13,17 @@
 ```powershell
 uv sync --locked --python 3.12
 uv run playwright install chromium
-uv run jpick --help
-uv run jpick --version
+uv run algo-pick --help
+uv run algo-pick --version
 ```
 
 ## 다른 프로젝트 안에서 사용
 
-코딩테스트 프로젝트의 `tools/jpick` 등에 소스 복사본을 넣으면 원본 저장소의 경로에 의존하지 않고 사용할 수 있다.
+코딩테스트 프로젝트의 `tools/algo-pick` 등에 소스 복사본을 넣으면 원본 저장소의 경로에 의존하지 않고 사용할 수 있다.
 이 저장소 루트에서 아래 명령을 실행한다. 대상은 새 폴더여야 하며 기존 폴더는 덮어쓰지 않는다.
 
 ```sh
-uv run --no-project --python 3.12 python scripts/export_tool.py --target "../algorithm/tools/jpick"
+uv run --no-project --python 3.12 python scripts/export_tool.py --target "../algorithm/tools/algo-pick"
 ```
 
 Windows·Mac 설치, VS Code 작업 예제 연결, Git 공유와 업데이트 방법은 [다른 프로젝트 통합 가이드](docs/integration.md)를 참고한다.
@@ -29,33 +33,34 @@ Windows·Mac 설치, VS Code 작업 예제 연결, Git 공유와 업데이트 �
 
 ```powershell
 # 티어 B5, 정답률 80% 이상인 전체 후보를 확인하고 5개 표시
-uv run jpick list --min-tier B5 --max-tier B5 --min-rate 80 --limit 5
+uv run algo-pick list --min-tier B5 --max-tier B5 --min-rate 80 --limit 5
 
 # 정답률이 높은 순서 (동점은 번호 오름차순)
-uv run jpick list --min-tier B5 --max-tier B5 --min-rate 80 --sort rate --order desc
+uv run algo-pick list --min-tier B5 --max-tier B5 --min-rate 80 --sort rate --order desc
 
 # 정답 제출 10건 이상인 전체 적격 후보에서 3개 추천 (중복 정답 제출 포함)
-uv run jpick recommend --min-tier B5 --max-tier B5 --min-rate 80 --min-accepted 10 --count 3
+uv run algo-pick --platform jungol recommend --min-tier B5 --max-tier B5 --min-rate 80 --min-accepted 10 --count 3
 
 # 정답 제출 수가 많은 순서
-uv run jpick list --min-tier B5 --max-tier B5 --sort accepted --order desc --limit 5
+uv run algo-pick list --min-tier B5 --max-tier B5 --sort accepted --order desc --limit 5
 
 # 지정한 공개 사용자가 푼 문제 / 아직 정답 처리하지 않은 문제
-uv run jpick list --user JUNGOL --status solved
-uv run jpick list --user '@JUNGOL' --status unsolved --min-tier B5 --max-tier B5 --min-rate 80
+uv run algo-pick list --user JUNGOL --status solved
+uv run algo-pick list --user '@JUNGOL' --status unsolved --min-tier B5 --max-tier B5 --min-rate 80
 
 # 범위 옵션으로 같은 조건을 짧게 지정 (양 끝 포함)
-uv run jpick list --tier S2..G3 --rate 40.5..80 --accepted 500..1000 --sort accepted --order desc --limit 5
+uv run algo-pick list --tier S2..G3 --rate 40.5..80 --accepted 500..1000 --sort accepted --order desc --limit 5
 
 # 하한·상한 중 필요한 쪽만 지정해서 3개 추천
-uv run jpick recommend --tier S2.. --rate ..80 --accepted 500.. --count 3
+uv run algo-pick recommend --tier S2.. --rate ..80 --accepted 500.. --count 3
 
 # 명시한 번호만 기본 브라우저로 열기 (1000은 한 번만 전달)
-uv run jpick open 1000 1000 1001
+uv run algo-pick open 1000 1000 1001
 ```
 
 | 옵션 | 값 / 기본값 |
 |---|---|
+| `--platform` | 명령 앞에 지정. 생략 시 `jungol`, 현재 선택 가능한 플랫폼도 `jungol` 하나 |
 | `--tier` | 사이트 티어 검색 조건 B5~R1 범위. 예: `S5..G1`, `G5..`, `..S1`. 기존 1~30도 지원 |
 | `--rate` | 정답률 0~100 정수·소수 범위, % 없이. 예: `40.5..80` |
 | `--accepted` | 정답 제출 수 0 이상 정수 범위, 중복 정답 제출 포함. 예: `500..1000` |
@@ -68,6 +73,10 @@ uv run jpick open 1000 1000 1001
 | `list --order` | `asc`(기본), `desc`. `random + desc`는 입력 오류 |
 | `list --limit` | 양의 정수, 기본 20 |
 | `recommend --count` | 양의 정수, 기본 1 |
+
+위 필터와 값은 정올 기준이다. `algo-pick --platform jungol list --help`와 `recommend --help`에서 선택 플랫폼의 지원 필터·의미·허용 값·조합과 미지원 옵션을 확인할 수 있다. 미지원 필터는 명시한 모든 옵션 이름을 플랫폼 이름과 함께 stderr에 알리고, 값 해석·수집·사용자 조회 전에 코드 2로 거부한다. 0이나 기본값과 같은 값을 명시해도 검사하며, 지원하는 속성의 개별 문제 값 미제공과 구분한다.
+
+빈 이름·오타·미등록 플랫폼은 정올로 대신 실행하지 않고 가능한 값 안내와 코드 2로 중단한다. 예를 들어 `algo-pick --platform programmers list`는 접속 없이 거부된다. 지원하는 필터의 잘못된 값·조합도 플랫폼·옵션·이유를 안내하고 접속 전에 거부한다.
 
 세 범위 옵션은 `MIN..MAX`, `MIN..`, `..MAX` 형태로 양 끝을 포함한다. 같은 경계는 `--accepted 500..500`, 실제 0은 `--accepted 0..0`처럼 지정한다. `--accepted=500..1000`처럼 등호로 값을 전달해도 된다. 각 범위 옵션은 한 번만 사용할 수 있다.
 
@@ -115,8 +124,8 @@ uv run jpick open 1000 1000 1001
 | 종료 코드 | 의미 |
 |---|---|
 | 0 | 성공, 정상 빈 결과와 추천 부족 포함 |
-| 1 | 접속·사용자 식별·DOM 구조·완전성·기본 브라우저 전달 실패 |
-| 2 | 잘못된 옵션·범위·개수·사용자 조건 |
+| 1 | 접속·사용자 식별·DOM 구조·완전성·기본 브라우저 전달 실패, 해당 플랫폼 구성 오류 |
+| 2 | 잘못된 플랫폼·미지원 필터·옵션·범위·개수·사용자 조건 |
 | 130 | Ctrl+C 취소 |
 
 `list/recommend`는 숨겨진 비영구 Chromium을 사용한다. `open`만 기본 브라우저에 링크를 전달한다. 전달 성공은 페이지 존재나 로딩 완료를 보장하지 않으며 일부 실패 시 모든 링크와 실패 번호를 출력한다.
@@ -132,12 +141,12 @@ uv run jpick open 1000 1000 1001
 ## 검증
 
 ```powershell
-uv run --locked pytest -q
+uv run --locked python -m pytest -q
 uv run --locked python scripts/benchmark_selection.py
 uv run --locked python scripts/benchmark_collection.py --baseline-ref c37208f5a80628df5d7126972d31461b2517177d --runs 3 --output specs/002-improve-list-collection/collection-benchmark.md
 ```
 
-기본 테스트는 고정 공급자와 로컬 HTML로 동작하며 원격 요청과 기본 브라우저 호출을 차단한다. 현재 정책의 구현·실사이트 검증 결과는 [003 quickstart.md](specs/003-align-site-listing/quickstart.md)에 기록한다. [002 기록](specs/002-improve-list-collection/quickstart.md)의 성능 측정·통합 수용 제약과 [001 기록](specs/001-jungol-problem-picker/quickstart.md)은 당시 정책의 이력이다. 수집 벤치는 고정 다중 목록을 별도 프로세스에서 비교하며 실제 사이트의 개선율을 뜻하지 않는다. 과거 측정을 003의 새 성능 측정으로 해석하지 않는다.
+기본 테스트는 고정 공급자와 로컬 HTML로 동작하며 원격 요청과 기본 브라우저 호출을 차단한다. 현재 플랫폼 선택·배포·회귀 검증 결과는 [005 quickstart.md](specs/005-platform-filter-validation/quickstart.md)에 기록한다. 정올 수집 정책과 당시 실사이트 검증은 [003 기록](specs/003-align-site-listing/quickstart.md)을 따른다. [002 기록](specs/002-improve-list-collection/quickstart.md)의 성능 측정·통합 수용 제약과 [001 기록](specs/001-jungol-problem-picker/quickstart.md)은 당시 정책의 이력이다. 수집 벤치는 고정 다중 목록을 별도 프로세스에서 비교하며 실제 사이트의 개선율을 뜻하지 않는다. 과거 측정을 003의 새 성능 측정으로 해석하지 않는다.
 
 002의 최종 문서·검증 근거 대조(T033)는 2026-10-24 완료했다. [마감 기록](specs/002-improve-list-collection/quickstart.md#t033-마감-2026-10-24)에 선행 결함의 해결 근거와 003에서 대체된 정책, 과거 성능 측정의 적용 범위를 정리했다.
 

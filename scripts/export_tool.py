@@ -77,8 +77,8 @@ def export_tool(target: Path) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description='jpick 소스와 실행 설정을 다른 프로젝트용 폴더로 복사합니다.')
-    parser.add_argument('--target', type=Path, required=True, help='새로 만들 대상 폴더 (예: ../algorithm/tools/jpick)')
+    parser = argparse.ArgumentParser(description='algo-pick 소스와 실행 설정을 다른 프로젝트용 폴더로 복사합니다.')
+    parser.add_argument('--target', type=Path, required=True, help='새로 만들 대상 폴더 (예: ../algorithm/tools/algo-pick)')
     args = parser.parse_args()
     try:
         target = export_tool(args.target)

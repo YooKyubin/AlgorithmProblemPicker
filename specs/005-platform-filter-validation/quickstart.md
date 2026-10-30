@@ -1,8 +1,8 @@
 # Quickstart Validation: algo-pick 플랫폼 선택
 
-이 가이드는 **구현 후** 수행할 검증 절차다. 계획 작성 시점에는 새 실행 이름·플랫폼 경계·새 테스트가 구현되지 않았다. 아래 명령을 이미 통과한 결과로 해석하지 않는다.
+이 가이드는 기본 수용 절차와 구현 검증 기록이다. 절차의 기대 결과와 문서 끝의 실제 실행 결과를 구분한다.
 
-**현재 구현 범위 (2026-10-30)**: T001~T030까지 완료했다. 설치 명령은 `algo-pick`이며 명령 앞의 `--platform` 선택과 정올 기본값을 제공한다. 명시한 미지원 필터는 값 해석·외부 작업 전에 전체 안내하며 내부 구성 오류와 사용자 입력 오류를 구분한다. 선택 플랫폼의 값·정렬 진단과 동적 help를 제공하고 정올 문법/의미를 보존한다. 정올의 값 상태·첫 실패 고유 집계와 합성 플랫폼의 미지원 열·미제공 집계 부재를 검증했다. 합성 플랫폼도 같은 세 명령과 공통 추천·실패/취소 정리를 사용함을 검증했다. 최종 배포/문서 정합성과 전체 회귀는 후속 T031~T034 범위다. 실제 실행 결과는 문서 끝의 검증 기록을 따른다.
+**현재 구현 범위 (2026-10-30)**: T001~T034 전체를 완료했다. 설치 명령은 `algo-pick`이며 명령 앞의 `--platform` 선택과 정올 기본값을 제공한다. 명시한 미지원 필터는 값 해석·외부 작업 전에 전체 안내하며 내부 구성 오류와 사용자 입력 오류를 구분한다. 선택 플랫폼의 값·정렬 진단과 동적 help를 제공하고 정올 문법/의미를 보존한다. 정올의 값 상태·첫 실패 고유 집계와 합성 플랫폼의 미지원 열·미제공 집계 부재를 검증했다. 합성 플랫폼도 같은 세 명령과 공통 추천·실패/취소 정리를 사용함을 검증했다. 현재 사용 자료·배포 예제·독립 설치를 정합화했으며 최종 전체 회귀는 853개 통과다. 실제 결과와 환경 제약은 문서 끝의 검증 기록을 따른다. 실사이트와 OS 기본 브라우저는 사용하지 않았다.
 
 ## 전제와 설치
 
@@ -31,10 +31,10 @@ uv run --locked python -c "from importlib.metadata import distribution; scripts=
 ## 1. 관련 회귀
 
 ```powershell
-uv run --locked pytest -q tests/test_platforms.py tests/test_cli.py tests/test_selection.py tests/test_service.py tests/test_export_tool.py
+uv run --locked python -m pytest -q tests/test_platforms.py tests/test_cli.py tests/test_selection.py tests/test_service.py tests/test_export_tool.py
 ```
 
-`test_platforms.py`는 이번 구현에서 추가할 계약 검증 파일이다. 기존 테스트는 타입 import·의존성 주입 지점만 변경하고 행동 기대를 유지한다.
+`test_platforms.py`는 이번 구현에서 추가한 계약 검증 파일이다. 기존 테스트는 타입 import·의존성 주입 지점을 조정하고 행동 기대를 유지한다.
 
 | 확인 묶음 | 관측할 결과 |
 | --- | --- |
@@ -89,7 +89,7 @@ uv run --locked algo-pick --platform jungol open --help
 관련 검증을 마친 뒤 한 번 실행한다.
 
 ```powershell
-uv run --locked pytest -q
+uv run --locked python -m pytest -q
 ```
 
 기대: 기존 로컬 정올 DOM·사용자 식별·사이트 검색 조건·완료 기준·실패 정리 회귀를 포함해 통과한다. 실패 테스트를 새 동작에 맞춘다는 이유로 정올 의미·제외 수·실패 기대를 약화하지 않는다. 이후 새로운 변경/실패가 없다면 같은 전체 검증을 반복하지 않는다.
@@ -129,7 +129,7 @@ uv run --locked algo-pick --platform jungol open 1000 1000 1001
 
 ## 검증 기록
 
-구현 단계에서 실행 명령·환경·실제 결과를 이 문서에 기록한다. 실패·환경 제약·선택적 미실행 항목도 구분한다. 2026-10-30 계획 단계에서는 문서 정합성 검증과 [research.md](research.md)의 로컬 실험만 수행했으며, 위 제품 수용 절차는 아직 실행하지 않았다.
+구현 단계에서 실행한 명령·환경·실제 결과를 아래에 기록한다. 실패·환경 제약·선택적 미실행 항목도 구분한다. 2026-10-30 계획 단계의 문서 정합성 검증과 [research.md](research.md)의 로컬 실험에 이어 작업 단위별 결과를 누적했다. 최종 수용 결과는 마지막 T031~T034 기록을 따른다.
 
 
 ### 2026-10-30 — T001 기존 회귀 기준
@@ -332,3 +332,94 @@ git diff --check
 - 새 의존성·잠금·제품 코드·DOM/source 변경은 없다. 실제 사이트·기본 브라우저·전체 pytest/DOM 반복·독립 내보내기 설치·스테이징/커밋은 수행하지 않았다. 선택적 전후 커밋 훅은 `auto_commit: false`와 부모 검토 후 커밋 범위에 따라 실행하지 않았다.
 
 이 구간의 알려진 실패는 없다. 현재 사용자 자료/VS Code/export 정합성과 최종 전체 회귀는 T031~T034에 남아 있다.
+
+### 2026-10-30 — T031~T034 현재 사용 자료와 최종 수용
+
+기준 커밋은 `b285b9bf6eb80094d3e55fdf5f83cffcb3f31289`다. Windows/PowerShell, Python 3.12.13과 기존 잠금 환경을 사용했다. requirements 체크리스트 16/16과 기존 Python ignore 패턴을 읽기 전용 확인했다. 헌장 I·III의 제한적 예외는 계획을 따랐으며 원문·의존성·`uv.lock`은 바꾸지 않았다.
+
+| 완료 작업 | 변경과 확인 |
+| --- | --- |
+| T031 | README 실행 이름을 algo-pick으로 정리하고 명령 앞 플랫폼 위치·jungol 기본/단독 실지원·기본 조회/명시 추천/직접 open·지원 필터/값/미지원 진단과 실행 이름 변경을 안내했다. 패키지/모듈 이름과 정올 지표 의미는 유지했다. |
+| T032 | 통합/독립 가이드의 설치·실행·내보내기 예시를 algo-pick과 tools/algo-pick으로 맞췄다. 플랫폼 위치·지원 정보 확인법·필터 값/조합·프로그래머스 미제공·기존 외부 폴더 자동 이동 없음과 input ID 변경을 설명했다. |
+| T033 | VS Code 세 작업의 상대 경로와 조회/추천의 `algo-pick --platform jungol`을 연결하고 algoPickTier/Rate/Accepted/Count/Limit ID·참조를 함께 변경했다. export 도움말을 정리하고 기존 5개 export 회귀에서 메타데이터·README/예제 복사·작업 연결을 확인했다. 새 테스트 함수는 추가하지 않았다. |
+| T034 | 관련 회귀, 전체 pytest 1회, 실제 설치 메타데이터/14개 CLI 실행, 현재 문서 rg, VS Code 참조, 새 독립 export와 no-dev 설치를 검증했다. 요구사항 추적 근거와 환경 제약을 기록하고 T001~T034 전체를 완료 표시했다. |
+
+수행 명령과 결과:
+
+```powershell
+# 기본 Temp 생성 오류를 피해 존재하지 않는 dist 하위 임시 경로 사용
+uv --cache-dir ./dist/uv-cache run --locked --offline python -m pytest -q tests/test_platforms.py tests/test_cli.py tests/test_selection.py tests/test_service.py tests/test_export_tool.py --tb=short --basetemp ./dist/pytest-005-related
+
+# 로컬 Chromium 하위 프로세스 허용 환경에서 전체 회귀를 한 번만 실행
+uv run --locked python -m pytest -q
+
+rg -n 'jpick|algo-pick|--platform' pyproject.toml README.md docs/integration.md docs/standalone.md examples/vscode/tasks.json scripts/export_tool.py
+git diff --check
+
+# 대상 부재 확인 후 표준 라이브러리만으로 새 복사본 생성
+.\.venv\Scripts\python.exe scripts/export_tool.py --help
+.\.venv\Scripts\python.exe scripts/export_tool.py --target ./dist/algo-pick-005-validation
+uv --directory ./dist/algo-pick-005-validation sync --locked --no-dev --offline
+uv --directory ./dist/algo-pick-005-validation run --locked --no-dev --offline algo-pick --version
+uv --directory ./dist/algo-pick-005-validation run --locked --no-dev --offline algo-pick --platform jungol list --help
+```
+
+| 검증 | 실제 결과 |
+| --- | --- |
+| 최종 관련 5개 파일 | **653 passed in 3.03s** |
+| 전체 pytest 1회 | **853 passed in 132.61s (0:02:12)**. 정올 로컬 DOM·사용자 식별·완료/실패/취소 회귀 포함 |
+| 실제 설치 메타데이터 | `distribution('algorithm-problem-picker').entry_points`의 console_scripts가 **{'algo-pick'}** |
+| 실제 설치 실행 파일 | `uv run --locked python -` 드라이버에서 `.venv/Scripts/algo-pick.exe`를 subprocess로 실행. version 0.1.0, root help와 기본/명시 정올 × 세 명령 help 7건 모두 코드 0 |
+| 실제 거부 6건 | unknown list, programmers recommend/open, 빈 플랫폼 list, 정올 accepted 역전 list, tier 신·구 혼용 recommend가 모두 코드 2·stdout 비어 있음·stderr 진단. 원격/소스/브라우저 0회는 고정 회귀의 호출 기록으로 별도 확인 |
+| 현재 사용 자료 | jpick 검색 결과는 세 문서의 실행 이름 변경 설명 3개뿐. 옛 명령 실행을 요구하는 예시 0개, 프로그래머스 제공 안내 0개. 과거 specs/검증 이력은 보존 |
+| VS Code | 기존 템플릿 회귀에서 세 상대 경로, 명령 앞 플랫폼, 다섯 input 정의와 전체 참조 일치를 확인 |
+| 새 독립 export | 새 경로 `dist/algo-pick-005-validation`, 파일 16개. 새 platforms/jungol_models/jungol_policy 모듈 포함, 모든 manifest SHA-256 일치, pyproject/README/VS Code 예제 정합성 확인. 복사 직후 .venv/.git/tests/scripts 없음 |
+| 독립 설치 | 기존 캐시만으로 locked/no-dev/offline sync 성공, 패키지 13개 설치. 복사본의 algo-pick version 0.1.0과 명시 jungol list help 코드 0, pytest 배포판 없음 |
+| 원본 경로 독립 관측 | 모듈 `__file__`은 복사본의 `src/algorithm_problem_picker/__init__.py`, distribution 위치는 복사본의 `.venv/Lib/site-packages`, direct_url은 새 복사본 URI. 원본 src는 sys.path에 없음 |
+| 최종 공백 검사 | `git diff --check` 통과 |
+
+CLI 14건의 실제 인자·종료 코드·stdout/stderr는 로컬 `dist/005-cli-acceptance.json`에도 남겼다. export manifest의 source_commit은 위 기준 커밋이며 source_dirty는 **true**다. 부모 검토/커밋 전 작업 트리의 스냅샷이므로 출처는 커밋과 파일별 해시를 함께 확인한다. 기존 dist 산출물과 외부 복사본은 이동·덮어쓰기·삭제하지 않았다.
+
+#### FR-001~016 최종 추적
+
+아래 회귀는 모두 최종 관련 653개 및 전체 853개 통과에 포함된다. 테스트 파일·관측 결과는 판정 근거이며 실사이트 관측을 뜻하지 않는다.
+
+| 요구사항 | 실제 검증 근거 |
+| --- | --- |
+| FR-001 | 설치 console_scripts 단일 키·실행 version/help·현재 문서/VS Code/export rg와 독립 설치 모두 algo-pick 확인 |
+| FR-002 | `test_cli.py`의 `test_default_and_explicit_jungol_share_complete_candidates` 및 open/default 추천에서 생략/명시 정올 세 명령 비교 |
+| FR-003 | `test_platforms.py::test_unknown_platform_stops_all_operations`의 unknown/빈 이름/programmers × 세 명령, 팩터리·사용자 조회·수집·브라우저 0회와 코드 2. 실제 거부 실행도 확인 |
+| FR-004 | `test_cli.py::test_open_unique_order_and_failure_links`와 합성 open에서 선택 플랫폼 고유 URL만 전달, 전 번호 선검증·소스 0회 |
+| FR-005 | `test_platforms.py`의 자체 난도 규칙/선택 help와 `test_cli.py`의 정올 help에서 의미·단위·허용 값·조합 격리 확인 |
+| FR-006 | `test_unsupported_filters_precede_value_parsing`의 두 명령 × 범위/min/max·사용자 조건과 복수 필터 거부 |
+| FR-007 | `test_all_unsupported_names_are_reported_without_duplicates` 및 사전 거부 fixture에서 플랫폼·전체 옵션·stderr·코드 2, 소스/사용자/수집/브라우저 0회 |
+| FR-008 | 무효/반복/retired 혼합의 지원 우선 검사, 정올 원래 옵션 진단과 합성 고유 값·정렬 오류의 외부 작업 전 코드 2 |
+| FR-009 | `test_raw_sources_preserve_commandline_and_legacy_last_value`, `test_omitted_unsupported_defaults_are_not_requests`와 0·명시 all·빈 user 사례 |
+| FR-010 | `test_cli.py`의 약칭/숫자·범위/기존 경계·Decimal·역전/혼용/반복·사용자·legacy 회귀. int(text)와 새 ASCII 범위 문법 차이 보존 |
+| FR-011 | 합성 기본 list/recommend에서 미지원 통계 열·미확인·미제공 집계 없음, 적격/반환 개수 보존 |
+| FR-012 | `test_selection.py`와 `test_cli.py`의 실제 0/미제공·필터 유무·첫 실패 고유 제외 수·중복 첫 레코드 보존 |
+| FR-013 | 정책/서비스의 검색 경계 밖 Rated·Unrated/Unavailable·정렬/동점·전체 후보 후 limit·공통 sample, 로컬 DOM의 완료/사용자 조건/실패 회귀 |
+| FR-014 | CLI/서비스의 정상 빈 결과·부족 코드 0, 오류 코드 1/2·취소 130, stdout/stderr·부분 결과 없음·with 정리 |
+| FR-015 | root/기본/명시 help 실제 7건, 지원 help 격리 회귀, 세 문서/VS Code/export 예제 점검과 독립 복사본 help |
+| FR-016 | `test_synthetic_commands_use_complete_unique_candidates`·`test_synthetic_open_validates_all_ids_without_source`와 opaque 조건/ID/falsey user 서비스 회귀. 동일 세 명령·전체 공통 sample·자체 모델/난도/URL·정올 호출 0회 |
+
+#### SC-001~006 최종 판정
+
+| 성공 기준 | 판정과 관측 |
+| --- | --- |
+| SC-001 | PASS. 기본/명시 정올 × 세 명령의 6개 흐름에서 조회 조건·정렬·집계/URL 일치, 추천 후보·개수·고유/부족 정책 일치. 무작위 표본 자체 비교는 하지 않음 |
+| SC-002 | PASS. 두 명령의 범위/기존 하한·상한/0/사용자·명시 기본값/복수·무효·반복 미지원 사례가 모두 코드 2·전체 옵션 안내이며 외부 작업 0회 |
+| SC-003 | PASS. 세 명령의 미등록 플랫폼과 정올/합성 고유 유효·무효 입력이 선택 정책대로 판정. 대체 정올 실행 0건 |
+| SC-004 | PASS. 0/미제공/미정/중복·첫 실패/정상 빈 결과·부족 정책 보존. 합성 미지원 속성으로 인한 제외·미확인 열·미제공 집계 0건 |
+| SC-005 | PASS. 비공개 합성 플랫폼이 동일 list/recommend/open과 공통 추천 경로를 사용. 다른 난도/URL로 동작하며 선택하지 않은 정올 작업 0회, 실제 신규 수집기 없음 |
+| SC-006 | PASS. 기본 조회·명시 정올 추천·직접 열기 예시와 필터 지원/의미/값 안내를 세 문서에서 확인. 옛 실행을 요구하거나 프로그래머스 제공을 주장하는 상충 예시 0개 |
+
+#### 환경 제약과 미실행
+
+- 관련 회귀의 최초 sandbox 실행은 **649 passed, 4 errors in 3.98s**였다. 네 export 사례는 제품 실행 전 tmp_path setup에서 기본 Temp의 번호 폴더 생성이 실패했다. 새 dist 하위 basetemp로 바꾸자 653개 전부 통과했으며 제품/테스트 로직 수정으로 숨기지 않았다.
+- sandbox의 직접 Windows launcher는 `uv trampoline failed to canonicalize script path`로 실패했다. 허용된 로컬 환경에서는 version이 성공했고, help 캡처의 기본 Windows 인코딩은 UTF-8 디코딩과 맞지 않았다. 하위 프로세스에 `PYTHONUTF8=1`, `PYTHONIOENCODING=utf-8`을 지정한 뒤 14건 전체를 확인했다. VS Code 예제는 기존 PYTHONUTF8 설정을 유지한다.
+- 전체 회귀는 로컬 Chromium 하위 프로세스 허용 환경에서 `python -m pytest`로 **한 번만** 수행했다. 이후 제품/예제/테스트 변경 없이 결과 기록과 체크 표시만 마무리했으며 전체 검증을 반복하지 않았다.
+- 실제 사이트·OS 기본 브라우저 호출·선택적 실사이트 예시·macOS 실기기 실행은 하지 않았다. 기본 수용은 고정 공급자와 로컬 HTML로 완료했다. 독립 복사본의 Chromium 재설치도 필요 없는 help/version 수용 범위이므로 하지 않았다.
+- 선택적 before/after implement Git 훅은 `.specify/extensions/git/git-config.yml`의 `auto_commit: false`와 부모 검토 후 커밋 지시에 따라 건너뛰었다. 스테이징·커밋은 수행하지 않았다.
+
+알려진 기능/회귀 실패와 남은 구현 작업은 없다. T001~T034 전체 기본 수용을 완료했다.
