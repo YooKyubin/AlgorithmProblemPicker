@@ -9,7 +9,7 @@
 Windows/PowerShell에서 저장소 루트와 `004-add-range-options` 브랜치를 확인한다. Python 3.12 이상, uv, 잠금 의존성과 전체 DOM 회귀용 Playwright Chromium이 필요하다. 이미 준비된 환경은 다시 설치하지 않는다.
 
 ```powershell
-Set-Location '.'
+# 프로젝트 루트에서 실행
 git branch --show-current
 uv sync --locked --python 3.12
 uv run --locked playwright install chromium

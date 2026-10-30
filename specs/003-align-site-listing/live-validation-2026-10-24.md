@@ -5,7 +5,7 @@
 - HEAD: 0c1565b86bd44f546a2e1954c8653762c24428e4
 - 브랜치: 003-align-site-listing
 - 실행 환경: Windows-11-10.0.26200-SP0, Python 3.12.13
-- Python 실행 경로: ./.venv/Scripts/python.exe
+- Python 실행 경로 (저장소 루트 기준): `./.venv/Scripts/python.exe`
 - 의존성: {"playwright": "1.64.0", "typer": "0.27.3", "rich": "15.0.0", "pytest": "9.1.1"}
 - 로컬 전체 회귀: uv run --locked pytest -q → 375 passed (127.55s)
 
