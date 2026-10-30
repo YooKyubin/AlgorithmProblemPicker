@@ -9,8 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import platforms
-from .jungol_models import SearchCriteria, Status
-from .models import Order, Progress, RawFilterInput, Result
+from .models import FILTER_OPTION_NAMES, RANGE_FILTER_OPTIONS, Order, Progress, RawFilterInput, Result
 from .ports import FilterInputError, PlatformPolicy, SourceError
 from .service import Picker
 
@@ -23,22 +22,16 @@ err = Console(stderr=True, highlight=False, markup=False)
 TierOption = Annotated[str | None, typer.Option(
     help="사이트 검색 조건인 티어 경계 B5~R1, 대소문자 무관 (기존 1~30도 지원, 포함). 표시 티어는 범위 밖일 수 있습니다.")]
 RateOption = Annotated[str | None, typer.Option(help="정답률 0~100 소수, % 없이 (포함)")]
-AcceptedOption = Annotated[int | None, typer.Option(min=0, help="정답 제출 수, 동일 사용자의 중복 정답 제출 포함 (경계 포함)")]
-StatusOption = Annotated[Status, typer.Option(help="공개 기준 사용자 풀이 여부")]
+AcceptedOption = Annotated[str | None, typer.Option(help="정답 제출 수, 동일 사용자의 중복 정답 제출 포함 (경계 포함)")]
+StatusOption = Annotated[str, typer.Option(help="공개 기준 사용자 풀이 여부")]
 UserOption = Annotated[str, typer.Option("--user", help="정확한 공개 핸들. @ 접두사 허용")]
 
 
-def _single_range(value: list[str]) -> list[str]:
-    if len(value) > 1:
-        raise typer.BadParameter("범위 옵션은 한 번만 지정하세요.")
-    return value
-
-
-TierRangeOption = Annotated[list[str], typer.Option(callback=_single_range, metavar="MIN..MAX",
+TierRangeOption = Annotated[list[str], typer.Option(metavar="MIN..MAX",
     help="사이트 검색 조건 B5~R1, 대소문자 무관 (기존 1~30도 지원). 예: S5..G1, G5.., ..S1. 표시 티어는 범위 밖일 수 있습니다.")]
-RateRangeOption = Annotated[list[str], typer.Option(callback=_single_range, metavar="MIN..MAX",
+RateRangeOption = Annotated[list[str], typer.Option(metavar="MIN..MAX",
     help="정답률 0~100 소수, % 없이")]
-AcceptedRangeOption = Annotated[list[str], typer.Option(callback=_single_range, metavar="MIN..MAX",
+AcceptedRangeOption = Annotated[list[str], typer.Option(metavar="MIN..MAX",
     help="정답 제출 수 0 이상 정수, 동일 사용자의 중복 정답 제출 포함")]
 
 
@@ -55,21 +48,21 @@ def _selected(ctx: typer.Context) -> platforms.PlatformBinding:
     return ctx.obj
 
 
-def _parse_filters(ctx: typer.Context, raw: RawFilterInput) -> SearchCriteria:
+def _parse_filters(ctx: typer.Context, raw: RawFilterInput):
+    binding = _selected(ctx)
+    supported = {option for capability in binding.info.filters if ctx.command.name in capability.commands
+                 for option in capability.option_names}
+    retired = {entry.option_name for entry in binding.info.retired_options}
+    unsupported = raw.supplied_options - supported - retired
+    if unsupported:
+        err.print(f'{binding.info.display_name}({binding.info.key}): 지원하지 않는 필터: '
+                  + ', '.join(sorted(unsupported)))
+        raise typer.Exit(2)
     try:
-        return _selected(ctx).policy.parse_filters(raw)
+        return binding.policy.parse_filters(raw)
     except FilterInputError as error:
-        raise typer.BadParameter(str(error), param_hint=error.option or None) from error
-
-
-def _reject_min_solvers(ctx: typer.Context, value: str | None) -> None:
-    if value is not None:
-        _parse_filters(ctx, RawFilterInput({'--min-solvers': value}))
-
-
-def _reject_max_solvers(ctx: typer.Context, value: str | None) -> None:
-    if value is not None:
-        _parse_filters(ctx, RawFilterInput({'--max-solvers': value}))
+        raise typer.BadParameter(f'{binding.info.display_name}({binding.info.key}): {error}',
+                                 param_hint=error.option or None) from error
 
 
 @app.callback()
@@ -81,24 +74,34 @@ def main(
     if show_version:
         typer.echo(version("algorithm-problem-picker"))
         raise typer.Exit()
-    binding = platforms.REGISTRY.get(platform)
+    try:
+        binding = platforms.REGISTRY.get(platform)
+    except platforms.PlatformConfigurationError as error:
+        err.print(str(error))
+        raise typer.Exit(1) from error
     if binding is None:
         raise typer.BadParameter(f'{platform!r}: 선택 가능한 플랫폼: ' + ', '.join(platforms.REGISTRY),
                                  param_hint='--platform')
     ctx.obj = binding
 
 
-def _criteria(ctx: typer.Context, min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
-              *, tier: list[str], rate: list[str], accepted: list[str]) -> SearchCriteria:
-    boundaries = {
-        '--min-tier': min_tier, '--max-tier': max_tier,
-        '--min-rate': min_rate, '--max-rate': max_rate,
-        '--min-accepted': min_accepted, '--max-accepted': max_accepted,
-        '--status': status, '--user': user,
-    }
-    values = {option: str(value) for option, value in boundaries.items() if value is not None}
-    values.update({'--tier': tuple(tier), '--rate': tuple(rate), '--accepted': tuple(accepted)})
-    return _parse_filters(ctx, RawFilterInput(values))
+def _criteria(ctx: typer.Context):
+    values: dict[str, str | tuple[str, ...]] = {}
+    supplied: set[str] = set()
+    for option in FILTER_OPTION_NAMES:
+        parameter = option[2:].replace('-', '_')
+        source = ctx.get_parameter_source(parameter)
+        assert source is not None
+        value = ctx.params[parameter]
+        if option in RANGE_FILTER_OPTIONS:
+            assert isinstance(value, tuple)
+            values[option] = tuple(value)
+        elif value is not None:
+            assert isinstance(value, str)
+            values[option] = value
+        if source.name == 'COMMANDLINE':
+            supplied.add(option)
+    return _parse_filters(ctx, RawFilterInput(values, frozenset(supplied)))
 
 
 def _progress(progress: Progress) -> None:
@@ -130,7 +133,7 @@ def _present(result: Result, policy: PlatformPolicy, recommend: bool = False) ->
         err.print(f"필터 지표 미제공으로 {result.omitted_unknown_count}개 제외")
 
 
-def _run(binding: platforms.PlatformBinding, criteria: SearchCriteria, requested: int, recommend: bool = False,
+def _run(binding: platforms.PlatformBinding, criteria, requested: int, recommend: bool = False,
          sort: str = 'id', order: Order = Order.ASC) -> None:
     try:
         err.print("조회 시작 · Ctrl+C 취소")
@@ -155,19 +158,18 @@ def list_command(
     min_tier: TierOption = None, max_tier: TierOption = None,
     min_rate: RateOption = None, max_rate: RateOption = None,
     min_accepted: AcceptedOption = None, max_accepted: AcceptedOption = None,
-    min_solvers: Annotated[str | None, typer.Option(hidden=True, is_eager=True, callback=_reject_min_solvers)] = None,
-    max_solvers: Annotated[str | None, typer.Option(hidden=True, is_eager=True, callback=_reject_max_solvers)] = None,
-    status: StatusOption = Status.ALL, user: UserOption = "",
+    min_solvers: Annotated[str | None, typer.Option(hidden=True)] = None,
+    max_solvers: Annotated[str | None, typer.Option(hidden=True)] = None,
+    status: StatusOption = 'all', user: UserOption = "",
     sort: Annotated[str, typer.Option(help="전체 적격 후보 정렬: id, difficulty, rate, accepted, random")] = 'id',
     order: Annotated[Order, typer.Option(help="정렬 방향. 지표 동점은 번호 오름차순")] = Order.ASC,
     limit: Annotated[int, typer.Option(min=1, help="전체 필터 후 표시 개수")] = 20,
 ) -> None:
+    criteria = _criteria(ctx)
     try:
         sort_key = _selected(ctx).policy.validate_list_options(sort, order)
     except FilterInputError as error:
         raise typer.BadParameter(str(error), param_hint=error.option or None) from error
-    criteria = _criteria(ctx, min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
-                         tier=tier, rate=rate, accepted=accepted)
     _run(_selected(ctx), criteria, limit, sort=sort_key, order=order)
 
 
@@ -179,13 +181,12 @@ def recommend(
     min_tier: TierOption = None, max_tier: TierOption = None,
     min_rate: RateOption = None, max_rate: RateOption = None,
     min_accepted: AcceptedOption = None, max_accepted: AcceptedOption = None,
-    min_solvers: Annotated[str | None, typer.Option(hidden=True, is_eager=True, callback=_reject_min_solvers)] = None,
-    max_solvers: Annotated[str | None, typer.Option(hidden=True, is_eager=True, callback=_reject_max_solvers)] = None,
-    status: StatusOption = Status.ALL, user: UserOption = "",
+    min_solvers: Annotated[str | None, typer.Option(hidden=True)] = None,
+    max_solvers: Annotated[str | None, typer.Option(hidden=True)] = None,
+    status: StatusOption = 'all', user: UserOption = "",
     count: Annotated[int, typer.Option(min=1, help="추천 개수")] = 1,
 ) -> None:
-    criteria = _criteria(ctx, min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
-                         tier=tier, rate=rate, accepted=accepted)
+    criteria = _criteria(ctx)
     _run(_selected(ctx), criteria, count, recommend=True)
 
 

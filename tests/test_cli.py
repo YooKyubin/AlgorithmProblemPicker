@@ -51,8 +51,8 @@ def source_factory(monkeypatch):
             return CompletedListing(())
 
     binding = platforms.REGISTRY[platforms.DEFAULT_PLATFORM]
-    monkeypatch.setitem(platforms.REGISTRY, platforms.DEFAULT_PLATFORM,
-                        replace(binding, source_factory=lambda report: Source(report)))
+    monkeypatch.setattr(platforms, 'REGISTRY', platforms.PlatformRegistry((
+        replace(binding, source_factory=lambda report: Source(report)),)))
     monkeypatch.setattr(cli.webbrowser, 'open', lambda *a, **k: pytest.fail('unexpected browser'))
     return Source, calls
 

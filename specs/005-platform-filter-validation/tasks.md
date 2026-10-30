@@ -73,14 +73,14 @@
 
 ### Tests for User Story 2
 
-- [ ] T013 [US2] `tests/test_platforms.py`에 일반 레지스트리 구성 경계로만 주입하는 비공개 합성 모델·정책·고정 소스·호출 기록을 준비하고 미지원 입력 계약을 먼저 검증한다. 합성 난도 100~200과 다른 URL을 사용하며 accepted/사용자 조건을 미지원으로, 복수 오류 사례에서는 tier/rate도 미지원으로 선언한다. 두 명령에서 범위/기존 min/max·0·명시적 `--status all`·`--user ''`·복수 미지원·무효/반복 값과 폐기 입력 혼합을 검사하고 생략 기본값은 허용한다. unknown/빈 이름/programmers는 세 명령에서 거부한다. 모든 외부 호출 0회·stdout 결과 없음·코드 2와 플랫폼/옵션명을 관측하며 구성 오류(중복 키·옵션 중복 소유·미정의 연결·출력 불일치·기본 누락)는 초기 경고와 영향받은 실행 코드 1을 검증한다. 테스트 종료 후 제품 등록은 jungol 하나여야 한다.
+- [X] T013 [US2] `tests/test_platforms.py`에 일반 레지스트리 구성 경계로만 주입하는 비공개 합성 모델·정책·고정 소스·호출 기록을 준비하고 미지원 입력 계약을 먼저 검증한다. 합성 난도 100~200과 다른 URL을 사용하며 accepted/사용자 조건을 미지원으로, 복수 오류 사례에서는 tier/rate도 미지원으로 선언한다. 두 명령에서 범위/기존 min/max·0·명시적 `--status all`·`--user ''`·복수 미지원·무효/반복 값과 폐기 입력 혼합을 검사하고 생략 기본값은 허용한다. unknown/빈 이름/programmers는 세 명령에서 거부한다. 모든 외부 호출 0회·stdout 결과 없음·코드 2와 플랫폼/옵션명을 관측하며 구성 오류(중복 키·옵션 중복 소유·미정의 연결·출력 불일치·기본 누락)는 초기 경고와 영향받은 실행 코드 1을 검증한다. 테스트 종료 후 제품 등록은 jungol 하나여야 한다.
 
 ### Implementation for User Story 2
 
-- [ ] T014 [P] [US2] `src/algorithm_problem_picker/cli.py`의 모든 필터를 raw 문자열·반복 범위 목록으로 받고 하위 `typer.Context.get_parameter_source(name)`의 공개 결과 `name == 'COMMANDLINE'`에서 정확한 supplied_options를 구성한다. 데이터 모델의 “값이 0·빈 문자열·all이어도 명시 여부를 보존한다.”, “범위는 모든 출현을 보존하고 지원 검사 후 반복을 거부한다.”, “기존 단일 경계 옵션 반복은 현재 파서의 동작을 유지한다.”를 적용한다. 자동 int/Status 변환과 eager 반복/legacy callback을 제거해 지원 검사 뒤로 이동하고 출처 누락은 내부 assertion으로 다룬다. argv 재파싱·별도 Click/private enum import는 하지 않는다.
-- [ ] T015 [US2] `src/algorithm_problem_picker/cli.py`의 list/recommend 공통 진입에서 선택 확인 → 명시 필터 전체 지원 검사 → 정책 값/조합 파싱·공통 비필터 검증 → 팩터리 호출 순서를 강제한다. 미지원은 원래 옵션명을 중복 없이 전부 stderr에 플랫폼 이름과 출력하고 코드 2로 끝낸다. retired_options는 지원 필터로 승격하지 않고 전체 미지원 검사 뒤 전용 거부 진단으로 전달한다. 빈/오타/대소문자 변형/미등록 플랫폼은 가능한 값 안내와 코드 2로 거부한다. 값 누락·알 수 없는 옵션은 기존 Typer 문법 오류에 맡기며 오류 시 진행/결과를 출력하지 않는다. T014 이후 수행한다.
-- [ ] T016 [P] [US2] `src/algorithm_problem_picker/platforms.py`에서 “등록 시 중복 플랫폼 키·한 옵션의 중복 소유·정의하지 않은 옵션 연결·지원 속성과 출력 선언 불일치를 검사한다.”를 구현한다. “구성 오류는 초기화 때 경고하고 해당 플랫폼 사용 시 실패한다.”와 “기본 플랫폼 누락을 다른 플랫폼 선택으로 숨기지 않는다.”를 적용하고 사용자 오타 코드 2와 내부 구성 코드 1을 구분한다. T013의 실패 검증 후 T014와 병렬 진행할 수 있다.
-- [ ] T017 [US2] `tests/test_platforms.py`의 미지원/구성 오류 사례와 `tests/test_cli.py`의 입력 오류 회귀를 실행해 두 명령·세 플랫폼 오류 흐름의 진단/우선순위/외부 호출 0회를 확인하고 `specs/005-platform-filter-validation/quickstart.md`에 기록한다. 유효하지 않은 비필터 옵션이 함께 있을 때의 우선순위는 고정하지 않는다.
+- [X] T014 [P] [US2] `src/algorithm_problem_picker/cli.py`의 모든 필터를 raw 문자열·반복 범위 목록으로 받고 하위 `typer.Context.get_parameter_source(name)`의 공개 결과 `name == 'COMMANDLINE'`에서 정확한 supplied_options를 구성한다. 데이터 모델의 “값이 0·빈 문자열·all이어도 명시 여부를 보존한다.”, “범위는 모든 출현을 보존하고 지원 검사 후 반복을 거부한다.”, “기존 단일 경계 옵션 반복은 현재 파서의 동작을 유지한다.”를 적용한다. 자동 int/Status 변환과 eager 반복/legacy callback을 제거해 지원 검사 뒤로 이동하고 출처 누락은 내부 assertion으로 다룬다. argv 재파싱·별도 Click/private enum import는 하지 않는다.
+- [X] T015 [US2] `src/algorithm_problem_picker/cli.py`의 list/recommend 공통 진입에서 선택 확인 → 명시 필터 전체 지원 검사 → 정책 값/조합 파싱·공통 비필터 검증 → 팩터리 호출 순서를 강제한다. 미지원은 원래 옵션명을 중복 없이 전부 stderr에 플랫폼 이름과 출력하고 코드 2로 끝낸다. retired_options는 지원 필터로 승격하지 않고 전체 미지원 검사 뒤 전용 거부 진단으로 전달한다. 빈/오타/대소문자 변형/미등록 플랫폼은 가능한 값 안내와 코드 2로 거부한다. 값 누락·알 수 없는 옵션은 기존 Typer 문법 오류에 맡기며 오류 시 진행/결과를 출력하지 않는다. T014 이후 수행한다.
+- [X] T016 [P] [US2] `src/algorithm_problem_picker/platforms.py`에서 “등록 시 중복 플랫폼 키·한 옵션의 중복 소유·정의하지 않은 옵션 연결·지원 속성과 출력 선언 불일치를 검사한다.”를 구현한다. “구성 오류는 초기화 때 경고하고 해당 플랫폼 사용 시 실패한다.”와 “기본 플랫폼 누락을 다른 플랫폼 선택으로 숨기지 않는다.”를 적용하고 사용자 오타 코드 2와 내부 구성 코드 1을 구분한다. T013의 실패 검증 후 T014와 병렬 진행할 수 있다.
+- [X] T017 [US2] `tests/test_platforms.py`의 미지원/구성 오류 사례와 `tests/test_cli.py`의 입력 오류 회귀를 실행해 두 명령·세 플랫폼 오류 흐름의 진단/우선순위/외부 호출 0회를 확인하고 `specs/005-platform-filter-validation/quickstart.md`에 기록한다. 유효하지 않은 비필터 옵션이 함께 있을 때의 우선순위는 고정하지 않는다.
 
 **Checkpoint**: 생략과 명시적 기본값을 구분하며 잘못된 미지원 값이 지원 검사보다 먼저 해석되지 않는다.
 

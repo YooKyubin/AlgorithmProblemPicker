@@ -8,6 +8,14 @@ from types import MappingProxyType
 from typing import Protocol
 
 
+FILTER_OPTION_NAMES = (
+    '--tier', '--min-tier', '--max-tier', '--rate', '--min-rate', '--max-rate',
+    '--accepted', '--min-accepted', '--max-accepted', '--status', '--user',
+    '--min-solvers', '--max-solvers',
+)
+RANGE_FILTER_OPTIONS = frozenset({'--tier', '--rate', '--accepted'})
+
+
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
