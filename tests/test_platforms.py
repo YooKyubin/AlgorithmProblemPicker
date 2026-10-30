@@ -5,7 +5,8 @@ from datetime import datetime
 import pytest
 from typer.testing import CliRunner
 
-from algorithm_problem_picker import cli, platforms
+from algorithm_problem_picker import cli, platforms, selection
+from algorithm_problem_picker.jungol import JungolSource
 from algorithm_problem_picker.models import CompletedListing, FilterCapability, PlatformInfo, ProblemLink, now
 from algorithm_problem_picker.ports import FilterInputError
 
@@ -84,7 +85,10 @@ class SyntheticPolicy:
         return f'합성 난도 {criteria.lower}..{criteria.upper} 점수'
 
     def problem_links(self, raw_ids):
-        ids = [int(value) for value in raw_ids]
+        try:
+            ids = [int(value) for value in raw_ids]
+        except ValueError as error:
+            raise FilterInputError('합성 ID는 양의 정수입니다.', 'ID') from error
         if any(value <= 0 for value in ids):
             raise FilterInputError('합성 ID는 양수입니다.', 'ID')
         return tuple(ProblemLink(str(value), f'https://example.test/problems/{value}')
@@ -92,10 +96,14 @@ class SyntheticPolicy:
 
 
 @pytest.fixture
-def synthetic_platform(monkeypatch):
+def synthetic_problems() -> list[SyntheticProblem]:
+    return [SyntheticProblem(1000, '합성 문제', 'https://example.test/problems/1000', now(), 150)]
+
+
+@pytest.fixture
+def synthetic_platform(monkeypatch, synthetic_problems):
     calls = []
     policy = SyntheticPolicy(calls)
-    problems = (SyntheticProblem(1000, '합성 문제', 'https://example.test/problems/1000', now(), 150),)
 
     @contextmanager
     def source_context():
@@ -103,12 +111,14 @@ def synthetic_platform(monkeypatch):
 
         class Source:
             def prepare_user(self, criteria):
+                assert isinstance(criteria, SyntheticCriteria)
                 calls.append('prepared')
                 return None
 
             def collect(self, criteria, user):
+                assert isinstance(criteria, SyntheticCriteria) and user is None
                 calls.append('collected')
-                return CompletedListing(problems)
+                return CompletedListing(tuple(synthetic_problems))
 
         try:
             yield Source()
@@ -128,9 +138,11 @@ def synthetic_platform(monkeypatch):
     binding = platforms.PlatformBinding(policy.info, policy, source_factory)
     monkeypatch.setattr(platforms, 'REGISTRY', platforms.PlatformRegistry((jungol, binding)))
     monkeypatch.setattr(platforms, 'JungolSource', unexpected)
+    monkeypatch.setattr(JungolSource, 'resolve_user', unexpected)
     monkeypatch.setattr(cli.webbrowser, 'open', unexpected)
     yield binding, calls
-    assert set(original_registry) == {'jungol'}
+    monkeypatch.undo()
+    assert platforms.REGISTRY is original_registry and set(platforms.REGISTRY) == {'jungol'}
 
 
 @pytest.mark.parametrize('command', ['list', 'recommend'])
@@ -309,6 +321,66 @@ def test_help_uses_selected_rules_without_global_mutation(synthetic_platform, co
     assert 'jungol' in jungol.stdout and 'B5~R1' in jungol.stdout
     root = runner.invoke(cli.app, ['--help'], terminal_width=240)
     version = runner.invoke(cli.app, ['--platform', 'test-platform', '--version'])
-    assert root.exit_code == version.exit_code == 0
+    open_help = runner.invoke(cli.app, ['--platform', 'test-platform', 'open', '--help'])
+    assert root.exit_code == version.exit_code == open_help.exit_code == 0
     assert 'test-platform' in root.stdout and 'jungol' in root.stdout
+    assert calls == []
+
+
+@pytest.mark.parametrize('command,requested', [('list', 1), ('recommend', 2), ('recommend', 8)])
+def test_synthetic_commands_use_complete_unique_candidates(synthetic_platform, synthetic_problems,
+                                                          monkeypatch, command, requested):
+    from rich.console import Console
+    _, calls = synthetic_platform
+    first = synthetic_problems[0]
+    synthetic_problems.extend([
+        replace(first, id=1001, url='https://example.test/problems/1001', difficulty=110),
+        replace(first, id=1002, url='https://example.test/problems/1002', difficulty=180),
+        replace(first, id=1003, url='https://example.test/problems/1003', difficulty=160),
+        replace(first, title='후속 중복 레코드', difficulty=200),
+        replace(first, id=1004, url='https://example.test/problems/1004', difficulty=170),
+    ])
+    populations = []
+
+    def sample(items, k):
+        assert calls[-1] == 'collected'
+        assert [item.id for item in items] == [1000, 1002, 1003, 1004]
+        assert items[0] is first and k == min(requested, 4)
+        populations.append(items)
+        return list(reversed(items))[:k]
+
+    monkeypatch.setattr(selection.random, 'sample', sample)
+    monkeypatch.setattr(cli, 'out', Console(width=180, highlight=False, markup=False))
+    options = (['--limit', str(requested), '--sort', 'difficulty', '--order', 'desc']
+               if command == 'list' else ['--count', str(requested)])
+    result = runner.invoke(cli.app, ['--platform', 'test-platform', command, '--tier', '140..180', *options])
+    assert result.exit_code == 0, result.output
+    rows = [line.split() for line in result.stdout.splitlines() if line.lstrip().startswith('100')]
+    expected = [1002] if command == 'list' else [1004, 1003, 1002, 1000][:requested]
+    assert [int(row[0]) for row in rows] == expected
+    assert len(rows) == len({row[0] for row in rows})
+    assert all(row[-1] == f'https://example.test/problems/{row[0]}' for row in rows)
+    assert f'조회 5 · 적격 4 · 요청 {requested}' in result.stdout
+    assert ('표시 1' if command == 'list' else f'반환 {len(expected)}') in result.stdout
+    assert '후속 중복 레코드' not in result.stdout and 'jungol.co.kr' not in result.stdout
+    if command == 'recommend':
+        assert f'부족 {max(0, requested - 4)}개' in result.stdout
+    assert len(populations) == (1 if command == 'recommend' else 0)
+    assert calls[1:] == ['factory', 'entered', 'prepared', 'collected', 'closed']
+
+
+@pytest.mark.parametrize('middle', [None, 'invalid', '0'])
+def test_synthetic_open_validates_all_ids_without_source(synthetic_platform, monkeypatch, middle):
+    _, calls = synthetic_platform
+    opened = []
+    monkeypatch.setattr(cli.webbrowser, 'open', lambda url: opened.append(url) or True)
+    ids = ['1000', middle or '1000', '1001']
+    result = runner.invoke(cli.app, ['--platform', 'test-platform', 'open', *ids])
+    assert result.exit_code == (0 if middle is None else 2), result.output
+    if middle is None:
+        assert opened == ['https://example.test/problems/1000', 'https://example.test/problems/1001']
+        assert result.stdout.splitlines() == opened
+    else:
+        assert opened == [] and result.stdout == ''
+        assert 'test-platform' in result.stderr and 'ID' in result.stderr
     assert calls == []

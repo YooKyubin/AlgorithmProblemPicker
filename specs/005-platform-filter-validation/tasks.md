@@ -136,12 +136,12 @@
 
 ### Tests for User Story 5
 
-- [ ] T028 [P] [US5] `tests/test_platforms.py`에서 기존 합성 fixture를 확장해 동일 CLI의 list/recommend/open 완전 흐름을 검증한다. 자체 typed 문제/조건·정올과 같은 ID의 다른 URL·중복 ID 첫 레코드·전체 적격 후보·공통 selection의 sample 호출·고유 추천/부족을 관측한다. 합성 전용 CLI/Picker/recommend 없이 구성만 주입하고 정올 소스/사용자 조회/정올 URL 전달 0회, open의 팩터리 0회와 테스트 후 jungol 단독 등록을 확인한다.
-- [ ] T029 [P] [US5] `tests/test_service.py`의 고정 소스를 제네릭 정책 계약에 맞춰 재사용하고 prepare_user가 None인 정상 흐름·None이 아닌 참조에서만 UserResolved 보고·완료 전 필터/정렬/sample 0회·소스 진입/식별/수집 실패·Ctrl+C에서 정리/부분 결과 금지를 확인한다. 기존 오류별 회귀 기대를 유지하고 `tests/test_platforms.py`와 동일한 성공 시나리오를 중복 작성하지 않는다.
+- [X] T028 [P] [US5] `tests/test_platforms.py`에서 기존 합성 fixture를 확장해 동일 CLI의 list/recommend/open 완전 흐름을 검증한다. 자체 typed 문제/조건·정올과 같은 ID의 다른 URL·중복 ID 첫 레코드·전체 적격 후보·공통 selection의 sample 호출·고유 추천/부족을 관측한다. 합성 전용 CLI/Picker/recommend 없이 구성만 주입하고 정올 소스/사용자 조회/정올 URL 전달 0회, open의 팩터리 0회와 테스트 후 jungol 단독 등록을 확인한다.
+- [X] T029 [P] [US5] `tests/test_service.py`의 고정 소스를 제네릭 정책 계약에 맞춰 재사용하고 prepare_user가 None인 정상 흐름·None이 아닌 참조에서만 UserResolved 보고·완료 전 필터/정렬/sample 0회·소스 진입/식별/수집 실패·Ctrl+C에서 정리/부분 결과 금지를 확인한다. 기존 오류별 회귀 기대를 유지하고 `tests/test_platforms.py`와 동일한 성공 시나리오를 중복 작성하지 않는다.
 
 ### Integration for User Story 5
 
-- [ ] T030 [US5] `src/algorithm_problem_picker/service.py`·`src/algorithm_problem_picker/selection.py`·`src/algorithm_problem_picker/ports.py`·`src/algorithm_problem_picker/platforms.py`의 조합을 T028/T029로 검증하고 남은 계약 위반을 수정한다. 공통 service/selection에 정올 import·플랫폼 키 분기·조건 필드 해석이 없는지 확인하며 문제/조건을 `dict[str, Any]`로 바꾸거나 모델 검증을 제거하지 않는다. 합성 구성에 필요한 연결은 기존 일반 경계로 해결하고 테스트 전용 공개 API는 만들지 않는다. 결과와 FR-016/SC-005의 관측 근거를 `specs/005-platform-filter-validation/quickstart.md`에 기록한다.
+- [X] T030 [US5] `src/algorithm_problem_picker/service.py`·`src/algorithm_problem_picker/selection.py`·`src/algorithm_problem_picker/ports.py`·`src/algorithm_problem_picker/platforms.py`의 조합을 T028/T029로 검증하고 남은 계약 위반을 수정한다. 공통 service/selection에 정올 import·플랫폼 키 분기·조건 필드 해석이 없는지 확인하며 문제/조건을 `dict[str, Any]`로 바꾸거나 모델 검증을 제거하지 않는다. 합성 구성에 필요한 연결은 기존 일반 경계로 해결하고 테스트 전용 공개 API는 만들지 않는다. 결과와 FR-016/SC-005의 관측 근거를 `specs/005-platform-filter-validation/quickstart.md`에 기록한다.
 
 **Checkpoint**: 지원 정보·정책·팩터리·링크 조합만으로 동일 세 명령과 공통 추천을 재사용할 수 있다.
 

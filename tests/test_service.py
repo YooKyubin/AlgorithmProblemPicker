@@ -1,13 +1,16 @@
+from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from typer.testing import CliRunner
 
+from algorithm_problem_picker import cli, platforms, selection
 from algorithm_problem_picker.models import CompletedListing, Known, Unavailable, now
 from algorithm_problem_picker.jungol_models import Rated, SearchCriteria, UserReference
 from algorithm_problem_picker.jungol_policy import JungolPolicy
-from algorithm_problem_picker.ports import SourceAccessError, SourceCompletenessError
+from algorithm_problem_picker.ports import SourceAccessError, SourceCompletenessError, UserResolutionError
 from algorithm_problem_picker.service import Picker
 
 
@@ -197,7 +200,11 @@ def test_zero_candidates_and_processing_stages(problem, operation):
 def test_cancel_never_processes_partial_result(problem, operation, monkeypatch):
     source = FixedSource([problem()])
     source.failure = KeyboardInterrupt()
-    monkeypatch.setattr('algorithm_problem_picker.jungol_policy.JungolPolicy.filter_listing',lambda *args:pytest.fail('filter before completion'))
+    def premature(*args, **kwargs):
+        pytest.fail('selection before completion')
+    monkeypatch.setattr(JungolPolicy, 'filter_listing', premature)
+    monkeypatch.setattr(JungolPolicy, 'sort_problems', premature)
+    monkeypatch.setattr(selection.random, 'sample', premature)
     stages = []
     with pytest.raises(KeyboardInterrupt):
         getattr(Picker(JungolPolicy(), source,lambda progress:stages.append(progress.stage)),operation)(SearchCriteria())
@@ -205,7 +212,8 @@ def test_cancel_never_processes_partial_result(problem, operation, monkeypatch):
 
 
 @pytest.mark.parametrize('user', [None, 0])
-def test_generic_flow_preserves_opaque_criteria_ids_and_user(user):
+@pytest.mark.parametrize('operation', ['list', 'recommend'])
+def test_generic_flow_preserves_opaque_criteria_ids_and_user(user, operation):
     criteria = object()
     first = SimpleNamespace(id=('opaque', 1), title='first', url='https://example.test/1', listed_at=now())
     later = SimpleNamespace(id=('opaque', 1), title='later', url='https://example.test/1', listed_at=now())
@@ -231,8 +239,56 @@ def test_generic_flow_preserves_opaque_criteria_ids_and_user(user):
                              sort_problems=lambda problems, sort, order: problems)
     source = SimpleNamespace(prepare_user=prepare, collect=collect)
     stages = []
-    result = Picker(policy, source, lambda progress: stages.append(progress.stage)).list(criteria)
+    result = getattr(Picker(policy, source, lambda progress: stages.append(progress.stage)), operation)(criteria)
     assert result.criteria is criteria and result.user is user
     assert result.problems == (first,)
     expected = ['Collecting', 'Processing', 'Complete']
     assert stages == (['UserResolved', *expected] if user is not None else expected)
+
+
+@pytest.mark.parametrize('operation', ['list', 'recommend'])
+@pytest.mark.parametrize('phase,error,code', [
+    ('enter', SourceAccessError('entry failed'), 1),
+    ('enter', KeyboardInterrupt(), 130),
+    ('prepare', UserResolutionError('identification failed'), 1),
+    ('prepare', KeyboardInterrupt(), 130),
+])
+def test_source_lifecycle_failure_cleans_up_without_selection(problem, monkeypatch, operation, phase, error, code):
+    source = FixedSource([problem()])
+    calls = []
+
+    def prepare(criteria):
+        calls.append('prepared')
+        raise error
+
+    def premature(*args, **kwargs):
+        pytest.fail('selection or collection before successful source preparation')
+
+    @contextmanager
+    def source_context():
+        calls.append('entered')
+        try:
+            if phase == 'enter':
+                raise error
+            yield source
+        finally:
+            calls.append('closed')
+
+    def source_factory(report):
+        calls.append('factory')
+        return source_context()
+
+    binding = platforms.REGISTRY['jungol']
+    monkeypatch.setattr(platforms, 'REGISTRY', platforms.PlatformRegistry((
+        replace(binding, source_factory=source_factory),)))
+    monkeypatch.setattr(source, 'prepare_user', prepare)
+    monkeypatch.setattr(source, 'collect', premature)
+    monkeypatch.setattr(binding.policy, 'filter_listing', premature)
+    monkeypatch.setattr(binding.policy, 'sort_problems', premature)
+    monkeypatch.setattr(selection.random, 'sample', premature)
+    monkeypatch.setattr(cli.webbrowser, 'open', premature)
+    result = CliRunner().invoke(cli.app, [operation, '--status', 'solved', '--user', 'Case'])
+    assert result.exit_code == code, result.output
+    assert result.stdout == '' and result.stderr
+    assert not source.collected
+    assert calls == ['factory', 'entered', *(['prepared'] if phase == 'prepare' else []), 'closed']
