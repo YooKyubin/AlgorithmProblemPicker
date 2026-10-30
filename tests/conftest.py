@@ -2,7 +2,8 @@ from decimal import Decimal
 
 import pytest
 
-from algorithm_problem_picker.models import Known, Problem, Rated, now
+from algorithm_problem_picker.models import Known, now
+from algorithm_problem_picker.jungol_models import Problem, Rated
 
 
 @pytest.fixture

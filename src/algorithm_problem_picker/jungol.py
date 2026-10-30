@@ -8,8 +8,8 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 from playwright.sync_api import Browser, BrowserContext, Error, JSHandle, Page, Request, sync_playwright
 
-from .models import CompletedListing, Known, Problem, Rated, SearchCriteria
-from .models import Status, Unavailable, Unrated, UserReference, now
+from .jungol_models import Problem, Rated, SearchCriteria, Status, Unrated, UserReference
+from .models import CompletedListing, Known, Unavailable, now
 from .ports import SourceAccessError, SourceCompletenessError, SourceSchemaError, UserResolutionError
 
 
@@ -287,6 +287,9 @@ class JungolSource:
         except (ValueError, InvalidOperation) as error:
             raise SourceSchemaError(f"{identity}: {error}") from error
 
+    def prepare_user(self, criteria: SearchCriteria) -> UserReference | None:
+        return self.resolve_user(criteria.user_handle) if criteria.user_handle else None
+
     def resolve_user(self, handle: str) -> UserReference:
         self._report(f"공개 사용자 @{handle} 확인 중 · Ctrl+C 취소")
         page = self._list_page
@@ -400,13 +403,13 @@ class JungolSource:
         self._list_page.get_by_role('button', name='더 불러오기', exact=True).click()
         return self._wait_listing(previous)
 
-    def collect(self, criteria: SearchCriteria, user: UserReference | None) -> CompletedListing:
+    def collect(self, criteria: SearchCriteria, user: UserReference | None) -> CompletedListing[Problem]:
         try:
             return self._collect(criteria, user)
         except Error as error:
             raise SourceAccessError(f"목록 브라우저 작업 실패: {error}") from error
 
-    def _collect(self, criteria: SearchCriteria, user: UserReference | None) -> CompletedListing:
+    def _collect(self, criteria: SearchCriteria, user: UserReference | None) -> CompletedListing[Problem]:
         params = {'type': 'problem', 'sort': 'idAsc', 'unrated': 'include'}
         if criteria.min_tier is not None or criteria.max_tier is not None:
             params['unrated'] = 'exclude'

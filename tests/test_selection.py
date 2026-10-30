@@ -3,8 +3,12 @@ from datetime import datetime
 
 import pytest
 
-from algorithm_problem_picker.models import Known, Rated, SearchCriteria, Unavailable, Unrated
+from algorithm_problem_picker.models import Known, RawFilterInput, Unavailable
+from algorithm_problem_picker.jungol_models import Rated, SearchCriteria, Unrated
 from algorithm_problem_picker import selection
+from algorithm_problem_picker.jungol_policy import JungolPolicy
+
+policy = JungolPolicy()
 
 
 def test_inclusive_decimal_filters_and_unknowns(problem):
@@ -13,20 +17,20 @@ def test_inclusive_decimal_filters_and_unknowns(problem):
                 problem(1004, tier=Unavailable()), problem(1005, accepted=Known(0))]
     criteria = SearchCriteria(min_tier=1, max_tier=1, min_rate=Decimal("47.45"),
                               max_rate=Decimal("47.45"), min_accepted=10, max_accepted=10)
-    result, omitted = selection.filter_listing(problems, criteria)
+    result, omitted = policy.filter_listing(problems, criteria)
     assert [p.id for p in result] == [1000]
     assert omitted == 2  # missing rate and missing tier, not the explicit Unrated
-    assert len(selection.filter_listing(problems, SearchCriteria())[0]) == 6
-    assert selection.filter_listing([problems[-1]], SearchCriteria(max_accepted=0))[0]
-    assert selection.filter_listing([problem(accepted=Unavailable())],
+    assert len(policy.filter_listing(problems, SearchCriteria())[0]) == 6
+    assert policy.filter_listing([problems[-1]], SearchCriteria(max_accepted=0))[0]
+    assert policy.filter_listing([problem(accepted=Unavailable())],
                                     SearchCriteria(min_accepted=0))[1] == 1
 
 
 def test_default_id_order_and_one_sided_bounds(problem):
     items = [problem(1002), problem(1000), problem(1001)]
-    assert [p.id for p in selection.sort_problems(items)] == [1000, 1001, 1002]
-    assert selection.filter_listing(items, SearchCriteria(max_rate=Decimal("47.44")))[0] == []
-    assert selection.filter_listing(items, SearchCriteria(min_tier=2))[0] == items
+    assert [p.id for p in policy.sort_problems(items)] == [1000, 1001, 1002]
+    assert policy.filter_listing(items, SearchCriteria(max_rate=Decimal("47.44")))[0] == []
+    assert policy.filter_listing(items, SearchCriteria(min_tier=2))[0] == items
 
 
 @pytest.mark.parametrize('bounds', [dict(min_tier=9,max_tier=13),dict(min_tier=9),dict(max_tier=9)])
@@ -35,12 +39,12 @@ def test_default_id_order_and_one_sided_bounds(problem):
 def test_rated_site_bounds_preserve_values_and_numeric_filters(problem, bounds, filters, expected):
     items = [problem(tier=Rated(8)),problem(1001,tier=Rated(10),rate=Known(Decimal('80')),accepted=Known(20)),
              problem(1002,tier=Rated(13),rate=Known(Decimal('10')),accepted=Known(30))]
-    eligible, omitted = selection.filter_listing(items,SearchCriteria(**bounds,**filters))
+    eligible, omitted = policy.filter_listing(items,SearchCriteria(**bounds,**filters))
     assert [item.id for item in eligible] == expected
     assert omitted == 0
     assert all(item is items[item.id-1000] for item in eligible)
-    assert [item.id for item in selection.sort_problems(eligible,'difficulty','asc')] == expected
-    assert [item.id for item in selection.sort_problems(eligible,'difficulty','desc')] == expected[::-1]
+    assert [item.id for item in policy.sort_problems(eligible,'difficulty','asc')] == expected
+    assert [item.id for item in policy.sort_problems(eligible,'difficulty','desc')] == expected[::-1]
 
 
 @pytest.mark.parametrize('kwargs', [dict(min_tier=0), dict(max_tier=31),
@@ -74,17 +78,17 @@ def test_metric_order_ties_and_missing_last(problem, sort, order, expected):
     high = problem(1002, tier=Rated(5), rate=Known(Decimal('90')), accepted=Known(30))
     missing = [problem(1004, tier=Unavailable(), rate=Unavailable(), accepted=Unavailable()),
                problem(1003, tier=Unrated(), rate=Unavailable(), accepted=Unavailable())]
-    assert [p.id for p in selection.sort_problems(low + [high] + missing, sort, order)] == expected
+    assert [p.id for p in policy.sort_problems(low + [high] + missing, sort, order)] == expected
 
 
 def test_id_desc_and_shuffle_entire_population(problem, monkeypatch):
     items = [problem(1000+i) for i in range(25)]
-    assert selection.sort_problems(items, 'id','desc')[0].id == 1024
+    assert policy.sort_problems(items, 'id','desc')[0].id == 1024
     def shuffle(population):
         assert len(population) == 25
         population.reverse()
     monkeypatch.setattr('random.shuffle', shuffle)
-    shuffled = selection.sort_problems(items, 'random')
+    shuffled = policy.sort_problems(items, 'random')
     assert shuffled[0].id == 1024 and {p.id for p in shuffled} == {p.id for p in items}
 
 
@@ -92,10 +96,10 @@ def test_id_desc_and_shuffle_entire_population(problem, monkeypatch):
 def test_three_tier_states_and_unique_unknown_count(problem, bounds):
     items = [problem(tier=Rated(9)), problem(1001,tier=Unrated()),
              problem(1002,tier=Unavailable(),rate=Unavailable())]
-    eligible, omitted = selection.filter_listing(items, SearchCriteria(**bounds))
+    eligible, omitted = policy.filter_listing(items, SearchCriteria(**bounds))
     assert [p.id for p in eligible] == ([1000] if bounds else [1000,1001,1002])
     assert omitted == (1 if bounds else 0)
-    assert selection.filter_listing(items[1:],SearchCriteria(min_tier=9)) == ([],1)
+    assert policy.filter_listing(items[1:],SearchCriteria(min_tier=9)) == ([],1)
 
 
 @pytest.mark.parametrize('bounds,expected', [(dict(min_accepted=10,max_accepted=20),[10,20]),
@@ -104,7 +108,7 @@ def test_three_tier_states_and_unique_unknown_count(problem, bounds):
 def test_accepted_bounds(problem, bounds, expected):
     values = [0,9,10,20,21,None]
     items = [problem(1000+i,accepted=Unavailable() if value is None else Known(value)) for i,value in enumerate(values)]
-    selected, omitted = selection.filter_listing(items,SearchCriteria(**bounds))
+    selected, omitted = policy.filter_listing(items,SearchCriteria(**bounds))
     assert [None if isinstance(p.accepted_count,Unavailable) else p.accepted_count.value for p in selected] == expected
     assert omitted == bool(bounds)
 
@@ -117,7 +121,7 @@ def test_missing_statistics_are_not_zero(problem, metric, bounds, expected):
              problem(1001,rate=Known(Decimal('20')),accepted=Known(20)),
              problem(1002,rate=Unavailable(),accepted=Unavailable())]
     options = {boundary+'_'+metric:Decimal(value) if metric == 'rate' else value for boundary,value in bounds.items()}
-    eligible, omitted = selection.filter_listing(items+items[2:],SearchCriteria(**options))
+    eligible, omitted = policy.filter_listing(items+items[2:],SearchCriteria(**options))
     assert [item.id for item in eligible] == expected
     assert omitted == (1 if bounds else 0)
 
@@ -125,7 +129,7 @@ def test_missing_statistics_are_not_zero(problem, metric, bounds, expected):
 def test_numeric_rejection_does_not_count_later_missing_statistic(problem):
     items = [problem(rate=Known(Decimal('0')),accepted=Unavailable()),
              problem(1001,rate=Unavailable(),accepted=Unavailable())]
-    assert selection.filter_listing(items+items,SearchCriteria(min_rate=Decimal('1'),min_accepted=0)) == ([],1)
+    assert policy.filter_listing(items+items,SearchCriteria(min_rate=Decimal('1'),min_accepted=0)) == ([],1)
 
 
 def test_unknown_count_stops_at_first_active_filter(problem):
@@ -133,7 +137,7 @@ def test_unknown_count_stops_at_first_active_filter(problem):
              problem(1001,tier=Unavailable(),rate=Unavailable(),accepted=Unavailable()),
              problem(1002,tier=Unrated(),rate=Unavailable(),accepted=Unavailable()),
              problem(1003,tier=Rated(9),rate=Unavailable(),accepted=Unavailable())]
-    assert selection.filter_listing(items+items[:1],SearchCriteria(min_tier=9,min_rate=Decimal('0'),min_accepted=0)) == ([],3)
+    assert policy.filter_listing(items+items[:1],SearchCriteria(min_tier=9,min_rate=Decimal('0'),min_accepted=0)) == ([],3)
 
 
 @pytest.mark.parametrize('value', [-1,1.5,True])
@@ -157,3 +161,15 @@ def test_problem_validation_preserves_domain_invariants(problem, changes):
 def test_rated_requires_integer_1_to_30(value):
     with pytest.raises(ValueError):
         Rated(value)
+
+
+def test_raw_filter_snapshot_preserves_explicit_values_and_repeated_ranges():
+    values = {'--accepted': ('0..0', '1..1'), '--status': 'all', '--user': ''}
+    supplied = {'--accepted', '--status', '--user'}
+    raw = RawFilterInput(values, supplied)
+    values.clear()
+    supplied.clear()
+    assert raw.values == {'--accepted': ('0..0', '1..1'), '--status': 'all', '--user': ''}
+    assert raw.supplied_options == frozenset({'--accepted', '--status', '--user'})
+    with pytest.raises(TypeError):
+        raw.values['--user'] = 'changed'

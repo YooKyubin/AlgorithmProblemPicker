@@ -7,7 +7,9 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 from algorithm_problem_picker.jungol import JungolSource
-from algorithm_problem_picker.models import Known, Rated, SearchCriteria, Unavailable, Unrated, UserReference, now
+from algorithm_problem_picker.models import Known, Unavailable, now
+from algorithm_problem_picker.jungol_models import Rated, SearchCriteria, Unrated, UserReference
+from algorithm_problem_picker.jungol_policy import JungolPolicy
 from algorithm_problem_picker.ports import SourceAccessError, SourceCompletenessError, SourceSchemaError, UserResolutionError
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'jungol'
@@ -101,7 +103,7 @@ def test_empty_statistics_listing_reaches_numeric_filters(source, operation):
         '<td data-col="정답률" data-col-empty></td>',1)
     serve_statistics(source,body,'more')
     options = dict(limit=1) if operation == 'list' else dict(count=1)
-    result = getattr(Picker(source),operation)(SearchCriteria(min_tier=9,max_tier=13,
+    result = getattr(Picker(JungolPolicy(), source),operation)(SearchCriteria(min_tier=9,max_tier=13,
         min_rate=Decimal('0'),max_accepted=0),**options)
     assert result.fetched_count == 6 and result.eligible_count == 2 and result.returned_count == 1
     assert result.omitted_unknown_count == 1 and result.problems[0].id in {1001,1004}
@@ -202,7 +204,7 @@ def test_actual_picker_has_no_detail_requests(source, monkeypatch, operation, fi
     second = body.replace('1000','1003').replace('1001','1004').replace('1002','1005')
     serve(source, lambda url: second if 'page=2' in url else first)
     criteria = SearchCriteria(min_accepted=0 if filtered else None,status=status,user_handle='' if status == 'all' else 'Sample')
-    result = getattr(Picker(source),operation)(criteria,**({'limit':1} if operation == 'list' else {'count':1}))
+    result = getattr(Picker(JungolPolicy(), source),operation)(criteria,**({'limit':1} if operation == 'list' else {'count':1}))
     assert result.fetched_count == 6 and result.returned_count == 1
     assert result.eligible_count == (4 if filtered else 6)
     assert len(requests) == 2 and all('/problem?' in url for url in requests)
@@ -411,7 +413,7 @@ def test_retained_cursor_collects_entire_population_before_limit(source, monkeyp
     monkeypatch.setattr('random.sample',sample)
     source._dom_timeout = 250
     options = dict(limit=1,sort='accepted',order='desc') if operation == 'list' else dict(count=1)
-    result = getattr(Picker(source),operation)(SearchCriteria(min_tier=9,max_tier=13),**options)
+    result = getattr(Picker(JungolPolicy(), source),operation)(SearchCriteria(min_tier=9,max_tier=13),**options)
     assert result.fetched_count == result.eligible_count == 5 and result.returned_count == 1
     assert result.problems[0].id == 1004 and result.problems[0].tier == Rated(8)
     assert len(documents) == 1 and '/problem?' in documents[0]
@@ -673,7 +675,7 @@ def test_rated_site_results_preserved_across_listing(source, monkeypatch, bounds
         serve(source,body)
     messages = []
     monkeypatch.setattr(source,'_report',messages.append)
-    result = getattr(Picker(source),operation)(SearchCriteria(**bounds),
+    result = getattr(Picker(JungolPolicy(), source),operation)(SearchCriteria(**bounds),
         **({'limit':10} if operation == 'list' else {'count':10}))
     expected_ids = [1000,1001,1002] if navigation == 'first' else [1000,1001,1002,1003,1004,1005]
     problems = sorted(result.problems,key=lambda problem:problem.id)
@@ -782,7 +784,7 @@ def test_t041_current_rows_after_request_are_complete(source, operation, public_
     source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
     source._dom_timeout = 250
     stages = []
-    result = getattr(Picker(source,lambda progress:stages.append(progress.stage)),operation)(
+    result = getattr(Picker(JungolPolicy(), source,lambda progress:stages.append(progress.stage)),operation)(
         SearchCriteria(),**({'limit':1} if operation == 'list' else {'count':1}))
     assert result.fetched_count == result.eligible_count == 3 and result.returned_count == 1
     assert stages == ['Collecting','Processing','Complete']
@@ -856,7 +858,7 @@ def test_t041_current_rows_do_not_wait_for_future_control(source, operation):
     serve(source,body)
     source._context.route('**/fixture-more',lambda route:route.fulfill(status=204))
     source._dom_timeout = 250
-    result = getattr(Picker(source),operation)(SearchCriteria(),
+    result = getattr(Picker(JungolPolicy(), source),operation)(SearchCriteria(),
         **({'limit':1} if operation == 'list' else {'count':1}))
     assert result.fetched_count == result.eligible_count == 4 and result.returned_count == 1
     source._list_page.evaluate("document.dispatchEvent(new Event('fixture-finish'))")

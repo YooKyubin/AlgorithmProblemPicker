@@ -4,8 +4,10 @@ from decimal import Decimal
 import platform
 from time import perf_counter
 
-from algorithm_problem_picker.models import Known, Problem, Rated, SearchCriteria, now
-from algorithm_problem_picker.selection import filter_listing, recommend, sort_problems
+from algorithm_problem_picker.models import Known, now
+from algorithm_problem_picker.jungol_models import Problem, Rated, SearchCriteria
+from algorithm_problem_picker.selection import recommend
+from algorithm_problem_picker.jungol_policy import JungolPolicy
 
 
 def main() -> None:
@@ -15,8 +17,9 @@ def main() -> None:
     criteria = SearchCriteria(min_tier=5, max_tier=25, min_rate=Decimal("30"),
                               max_rate=Decimal("90"), min_accepted=10)
     start = perf_counter()
-    eligible, _ = filter_listing(items, criteria)
-    ordered = sort_problems(eligible, "rate", "desc")
+    policy = JungolPolicy()
+    eligible, _ = policy.filter_listing(items, criteria)
+    ordered = policy.sort_problems(eligible, "rate", "desc")
     selected = recommend(eligible, 5)
     elapsed = perf_counter() - start
     assert len(ordered) == len(eligible) and len(selected) == 5

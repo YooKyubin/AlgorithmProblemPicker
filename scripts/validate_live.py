@@ -4,8 +4,8 @@ import argparse
 from decimal import Decimal
 
 from algorithm_problem_picker.jungol import JungolSource
-from algorithm_problem_picker.models import SearchCriteria
-from algorithm_problem_picker.selection import filter_listing
+from algorithm_problem_picker.jungol_models import SearchCriteria
+from algorithm_problem_picker.jungol_policy import JungolPolicy
 
 
 def main() -> None:
@@ -21,7 +21,7 @@ def main() -> None:
             criteria = SearchCriteria(min_tier=1, max_tier=1, min_rate=Decimal("80"), status=status,
                                       user_handle="" if status == "all" else handle)
             listing = source.collect(criteria, None if status == "all" else user)
-            eligible, _ = filter_listing(listing.candidates, criteria)
+            eligible, _ = JungolPolicy().filter_listing(listing.candidates, criteria)
             results[status] = {problem.id for problem in eligible}
             print(f"{status}: 조회 {len(listing.candidates)}, 적격 {len(eligible)}, 번호 {sorted(results[status])}")
         assert not results["solved"] & results["unsolved"]

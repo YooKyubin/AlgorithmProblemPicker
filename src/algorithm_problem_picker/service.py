@@ -2,35 +2,36 @@
 
 from collections.abc import Callable
 
-from .models import Order, Progress, Result, SearchCriteria, SortKey, Stage, now
-from .ports import ProblemSource
-from .selection import filter_listing, recommend, sort_problems
+from .models import Order, ProblemRecord, Progress, Result, Stage, now
+from .ports import PlatformPolicy, ProblemSource
+from .selection import recommend
 
 
-class Picker:
-    def __init__(self, source: ProblemSource, report: Callable[[Progress], None] = lambda _: None):
+class Picker[P: ProblemRecord, C, U]:
+    def __init__(self, policy: PlatformPolicy[P, C, U], source: ProblemSource[P, C, U],
+                 report: Callable[[Progress], None] = lambda _: None):
+        self.policy = policy
         self.source = source
         self.report = report
 
-    def recommend(self, criteria: SearchCriteria, count: int = 1) -> Result:
+    def recommend(self, criteria: C, count: int = 1) -> Result[P, C, U]:
         return self._run(criteria, count, random_selection=True)
 
-    def list(self, criteria: SearchCriteria, limit: int = 20,
-             sort: SortKey = SortKey.ID, order: Order = Order.ASC) -> Result:
-        sort, order = SortKey(sort), Order(order)
-        if sort == SortKey.RANDOM and order == Order.DESC:
-            raise ValueError("random과 --order desc를 함께 지정할 수 없습니다.")
+    def list(self, criteria: C, limit: int = 20,
+             sort: str = 'id', order: Order = Order.ASC) -> Result[P, C, U]:
+        order = Order(order)
+        sort = self.policy.validate_list_options(sort, order)
         return self._run(criteria, limit, random_selection=False, sort=sort, order=order)
 
-    def _run(self, criteria: SearchCriteria, requested: int, random_selection: bool,
-             sort: SortKey = SortKey.ID, order: Order = Order.ASC) -> Result:
+    def _run(self, criteria: C, requested: int, random_selection: bool,
+             sort: str = 'id', order: Order = Order.ASC) -> Result[P, C, U]:
         if type(requested) is not int or requested <= 0:
             raise ValueError("개수는 양의 정수여야 합니다.")
         started_at = now()
         progress = Progress()
         try:
-            user = self.source.resolve_user(criteria.user_handle) if criteria.user_handle else None
-            if user:
+            user = self.source.prepare_user(criteria)
+            if user is not None:
                 progress.advance(Stage.USER_RESOLVED)
                 self.report(progress)
             progress.advance(Stage.COLLECTING)
@@ -39,8 +40,9 @@ class Picker:
             progress.collected = len(listing.candidates)
             progress.advance(Stage.PROCESSING)
             self.report(progress)
-            eligible, omitted = filter_listing(listing.candidates, criteria)
-            selected = recommend(eligible, requested) if random_selection else sort_problems(eligible, sort, order)[:requested]
+            eligible, omitted = self.policy.filter_listing(listing.candidates, criteria)
+            selected = recommend(eligible, requested) if random_selection else self.policy.sort_problems(
+                eligible, sort, order)[:requested]
             result = Result(criteria=criteria, user=user, problems=tuple(selected),
                           fetched_count=progress.collected, eligible_count=len(eligible),
                           omitted_unknown_count=omitted, started_at=started_at,

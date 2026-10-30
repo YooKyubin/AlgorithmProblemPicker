@@ -1,9 +1,12 @@
 from dataclasses import replace
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
-from algorithm_problem_picker.models import CompletedListing, Known, Rated, SearchCriteria, Unavailable, UserReference, now
+from algorithm_problem_picker.models import CompletedListing, Known, Unavailable, now
+from algorithm_problem_picker.jungol_models import Rated, SearchCriteria, UserReference
+from algorithm_problem_picker.jungol_policy import JungolPolicy
 from algorithm_problem_picker.ports import SourceAccessError, SourceCompletenessError
 from algorithm_problem_picker.service import Picker
 
@@ -13,6 +16,9 @@ class FixedSource:
         self.problems = problems
         self.collected = False
         self.failure = None
+
+    def prepare_user(self, criteria):
+        return self.resolve_user(criteria.user_handle) if criteria.user_handle else None
 
     def resolve_user(self, handle):
         return UserReference(handle, 42, now())
@@ -31,7 +37,7 @@ class FixedSource:
 
 def test_complete_dedup_cheap_filter_and_limit(problem):
     source = FixedSource([problem(), problem(1001, rate=Known(Decimal('10'))), problem(1002)])
-    result = Picker(source).list(SearchCriteria(min_rate=Decimal('40')), limit=1)
+    result = Picker(JungolPolicy(), source).list(SearchCriteria(min_rate=Decimal('40')), limit=1)
     assert result.fetched_count == 3
     assert result.eligible_count == 2
     assert result.problems[0].title == '문제 1000'
@@ -43,7 +49,7 @@ def test_complete_dedup_cheap_filter_and_limit(problem):
 
 def test_user_partition_and_normalized_exact_handle(problem):
     source = FixedSource([problem(), problem(1001), problem(1002)])
-    picker = Picker(source)
+    picker = Picker(JungolPolicy(), source)
     all_ids = {p.id for p in picker.list(SearchCriteria()).problems}
     solved = picker.list(SearchCriteria(status='solved', user_handle='@Case'))
     unsolved = picker.list(SearchCriteria(status='unsolved', user_handle='@Case'))
@@ -58,7 +64,7 @@ def test_collection_failure_never_returns_result(problem):
     source = FixedSource([problem(), problem(1001)])
     source.failure = SourceAccessError('collection failed')
     with pytest.raises(SourceAccessError):
-        Picker(source).list(SearchCriteria(), limit=1)
+        Picker(JungolPolicy(), source).list(SearchCriteria(), limit=1)
 
 
 @pytest.mark.parametrize('operation', ['list', 'recommend'])
@@ -69,12 +75,12 @@ def test_incomplete_collection_never_filters_sorts_or_samples(problem, monkeypat
     def premature(*args, **kwargs):
         pytest.fail('selection before complete collection')
     monkeypatch.setattr(source, 'collect', incomplete)
-    monkeypatch.setattr('algorithm_problem_picker.service.filter_listing', premature)
-    monkeypatch.setattr('algorithm_problem_picker.service.sort_problems', premature)
+    monkeypatch.setattr('algorithm_problem_picker.jungol_policy.JungolPolicy.filter_listing', premature)
+    monkeypatch.setattr('algorithm_problem_picker.jungol_policy.JungolPolicy.sort_problems', premature)
     monkeypatch.setattr('algorithm_problem_picker.service.recommend', premature)
     stages = []
     with pytest.raises(SourceCompletenessError):
-        getattr(Picker(source, report=lambda progress: stages.append(progress.stage)), operation)(SearchCriteria())
+        getattr(Picker(JungolPolicy(), source, report=lambda progress: stages.append(progress.stage)), operation)(SearchCriteria())
     assert not source.collected
     assert stages == ['Collecting','Failed']
 
@@ -86,7 +92,7 @@ def test_recommend_collects_all_candidates_before_sample(problem, monkeypatch):
         assert len(items) == 12 and k == 5
         return items[-5:]
     monkeypatch.setattr('random.sample', sample)
-    result = Picker(source).recommend(SearchCriteria(), count=5)
+    result = Picker(JungolPolicy(), source).recommend(SearchCriteria(), count=5)
     assert [p.id for p in result.problems] == [1007,1008,1009,1010,1011]
     assert result.requested_count == result.returned_count == 5 and result.shortage == 0
     assert result.fetched_count == result.eligible_count == 12
@@ -98,23 +104,24 @@ def test_recommend_failure_does_not_sample(problem, monkeypatch):
     source.failure = SourceAccessError('collection failed')
     monkeypatch.setattr('random.sample', lambda *args: pytest.fail('sample before complete'))
     with pytest.raises(SourceAccessError):
-        Picker(source).recommend(SearchCriteria())
+        Picker(JungolPolicy(), source).recommend(SearchCriteria())
 
 
 def test_recommend_shortage_and_shared_filter(problem):
     source = FixedSource([problem(), problem(1001, rate=Known(Decimal('10')))])
     criteria = SearchCriteria(min_rate=Decimal('40'))
-    listed = Picker(source).list(criteria)
-    result = Picker(source).recommend(criteria, count=5)
+    listed = Picker(JungolPolicy(), source).list(criteria)
+    result = Picker(JungolPolicy(), source).recommend(criteria, count=5)
     assert result.problems == listed.problems
     assert result.shortage == 4 and result.returned_count == 1
 
 
 @pytest.mark.parametrize('operation', ['list','recommend'])
 def test_all_unknown_tiers_are_normal_empty_result(problem, operation):
-    from algorithm_problem_picker.models import Unavailable, Unrated
+    from algorithm_problem_picker.models import Unavailable
+    from algorithm_problem_picker.jungol_models import Unrated
     source = FixedSource([problem(tier=Unrated()),problem(1001,tier=Unavailable())])
-    result = getattr(Picker(source),operation)(SearchCriteria(min_tier=9,max_tier=14))
+    result = getattr(Picker(JungolPolicy(), source),operation)(SearchCriteria(min_tier=9,max_tier=14))
     assert result.fetched_count == 2 and result.eligible_count == result.returned_count == 0
     assert result.omitted_unknown_count == 1
 
@@ -132,7 +139,7 @@ def test_all_rated_outside_site_bounds_remain_eligible(problem, monkeypatch, ope
     monkeypatch.setattr('random.sample',sample)
     criteria = SearchCriteria(**bounds,min_rate=Decimal('40'),max_accepted=20)
     options = dict(limit=1,sort='difficulty',order='desc') if operation == 'list' else dict(count=1)
-    result = getattr(Picker(source),operation)(criteria,**options)
+    result = getattr(Picker(JungolPolicy(), source),operation)(criteria,**options)
     assert result.fetched_count == result.eligible_count == 2
     assert result.returned_count == 1 and result.shortage == result.omitted_unknown_count == 0
     assert result.criteria == criteria and result.problems[0] is source.problems[1]
@@ -141,17 +148,17 @@ def test_all_rated_outside_site_bounds_remain_eligible(problem, monkeypatch, ope
 
 
 def test_sort_full_candidates_before_limit_keeps_unrated(problem):
-    from algorithm_problem_picker.models import Unrated
+    from algorithm_problem_picker.jungol_models import Unrated
     source = FixedSource([problem(1000, tier=Unrated()), problem(1001),
                           problem(1002, rate=Known(Decimal('99')))])
-    result = Picker(source).list(SearchCriteria(), sort='rate', order='desc', limit=1)
+    result = Picker(JungolPolicy(), source).list(SearchCriteria(), sort='rate', order='desc', limit=1)
     assert result.problems[0].id == 1002 and result.eligible_count == 3
     assert source.collected
 
 
 def test_accepted_filter_retains_listing_values(problem):
     source = FixedSource([problem(accepted=Known(6510)),problem(1001,accepted=Known(0))])
-    result = Picker(source).list(SearchCriteria(min_accepted=5000))
+    result = Picker(JungolPolicy(), source).list(SearchCriteria(min_accepted=5000))
     assert [p.id for p in result.problems] == [1000]
     assert result.problems[0] is source.problems[0]
 
@@ -163,7 +170,7 @@ def test_missing_statistics_can_be_normal_empty_result(problem, operation, filte
     source = FixedSource([problem(rate=Unavailable(),accepted=Unavailable()),
                           problem(1001,rate=Unavailable(),accepted=Unavailable())])
     options = dict(limit=3) if operation == 'list' else dict(count=3)
-    result = getattr(Picker(source),operation)(SearchCriteria(**filters),**options)
+    result = getattr(Picker(JungolPolicy(), source),operation)(SearchCriteria(**filters),**options)
     assert result.fetched_count == 2
     assert result.eligible_count == result.returned_count == (0 if filters else 2)
     assert result.omitted_unknown_count == (2 if filters else 0)
@@ -180,7 +187,7 @@ def test_zero_candidates_and_processing_stages(problem, operation):
     def report(progress):
         stages.append(progress.stage)
         counts.append(progress.collected)
-    result = getattr(Picker(FixedSource([]),report),operation)(SearchCriteria())
+    result = getattr(Picker(JungolPolicy(), FixedSource([]),report),operation)(SearchCriteria())
     assert result.fetched_count == result.eligible_count == result.returned_count == 0
     assert stages == ['Collecting','Processing','Complete'] and counts == [0,0,0]
     assert result.shortage == (1 if operation == 'recommend' else 0)
@@ -190,8 +197,42 @@ def test_zero_candidates_and_processing_stages(problem, operation):
 def test_cancel_never_processes_partial_result(problem, operation, monkeypatch):
     source = FixedSource([problem()])
     source.failure = KeyboardInterrupt()
-    monkeypatch.setattr('algorithm_problem_picker.service.filter_listing',lambda *args:pytest.fail('filter before completion'))
+    monkeypatch.setattr('algorithm_problem_picker.jungol_policy.JungolPolicy.filter_listing',lambda *args:pytest.fail('filter before completion'))
     stages = []
     with pytest.raises(KeyboardInterrupt):
-        getattr(Picker(source,lambda progress:stages.append(progress.stage)),operation)(SearchCriteria())
+        getattr(Picker(JungolPolicy(), source,lambda progress:stages.append(progress.stage)),operation)(SearchCriteria())
     assert stages == ['Collecting','Cancelled']
+
+
+@pytest.mark.parametrize('user', [None, 0])
+def test_generic_flow_preserves_opaque_criteria_ids_and_user(user):
+    criteria = object()
+    first = SimpleNamespace(id=('opaque', 1), title='first', url='https://example.test/1', listed_at=now())
+    later = SimpleNamespace(id=('opaque', 1), title='later', url='https://example.test/1', listed_at=now())
+    listing = CompletedListing((first, later))
+    observed = []
+
+    def prepare(received):
+        assert received is criteria
+        return user
+
+    def collect(received, reference):
+        assert received is criteria and reference is user
+        observed.append('collected')
+        return listing
+
+    def filter_listing(problems, received):
+        assert received is criteria and observed == ['collected']
+        assert problems == (first,)
+        return list(problems), 0
+
+    policy = SimpleNamespace(validate_list_options=lambda sort, order: sort,
+                             filter_listing=filter_listing,
+                             sort_problems=lambda problems, sort, order: problems)
+    source = SimpleNamespace(prepare_user=prepare, collect=collect)
+    stages = []
+    result = Picker(policy, source, lambda progress: stages.append(progress.stage)).list(criteria)
+    assert result.criteria is criteria and result.user is user
+    assert result.problems == (first,)
+    expected = ['Collecting', 'Processing', 'Complete']
+    assert stages == (['UserResolved', *expected] if user is not None else expected)

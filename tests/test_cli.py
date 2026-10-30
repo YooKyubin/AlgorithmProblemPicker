@@ -1,11 +1,13 @@
 import re
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
 from typer.testing import CliRunner
 
-from algorithm_problem_picker import cli
-from algorithm_problem_picker.models import CompletedListing, Known, Rated, SearchCriteria, UserReference, now
+from algorithm_problem_picker import cli, platforms
+from algorithm_problem_picker.models import CompletedListing, Known, now
+from algorithm_problem_picker.jungol_models import Rated, SearchCriteria, UserReference
 from algorithm_problem_picker.ports import SourceAccessError, SourceSchemaError, SourceCompletenessError, UserResolutionError
 
 runner = CliRunner()
@@ -41,11 +43,16 @@ def source_factory(monkeypatch):
         def __exit__(self, *args):
             calls.append('closed')
 
+        def prepare_user(self, criteria):
+            return self.resolve_user(criteria.user_handle) if criteria.user_handle else None
+
         def collect(self, criteria, user):
             calls.append(criteria)
             return CompletedListing(())
 
-    monkeypatch.setattr(cli, 'JungolSource', Source)
+    binding = platforms.REGISTRY[platforms.DEFAULT_PLATFORM]
+    monkeypatch.setitem(platforms.REGISTRY, platforms.DEFAULT_PLATFORM,
+                        replace(binding, source_factory=lambda report: Source(report)))
     monkeypatch.setattr(cli.webbrowser, 'open', lambda *a, **k: pytest.fail('unexpected browser'))
     return Source, calls
 
@@ -73,7 +80,8 @@ def test_list_empty_and_default_output_channels(source_factory):
 
 def test_common_filters_and_exact_user_reach_service(source_factory, monkeypatch):
     from decimal import Decimal
-    from algorithm_problem_picker.models import UserReference, now
+    from algorithm_problem_picker.models import now
+    from algorithm_problem_picker.jungol_models import UserReference
     source, calls = source_factory
     def resolve(self, handle):
         assert handle == 'Case'
@@ -137,7 +145,8 @@ def test_invalid_tier_abbreviations_before_source(source_factory, command, argum
 @pytest.mark.parametrize('command', ['list', 'recommend'])
 def test_all_tier_names_and_unrated_output(source_factory, monkeypatch, problem, command):
     from rich.console import Console
-    from algorithm_problem_picker.models import Unavailable, Unrated
+    from algorithm_problem_picker.models import Unavailable
+    from algorithm_problem_picker.jungol_models import Unrated
     source, _ = source_factory
     items = tuple(problem(1000+i, tier=Rated(i+1)) for i in range(30)) + (
         problem(1030, tier=Unrated()), problem(1031, tier=Unavailable()))
@@ -401,7 +410,7 @@ def test_tier_help_explains_site_search(source_factory, command):
 @pytest.mark.parametrize('bounds', [['--min-tier','9','--max-tier','13'],['--min-tier','9'],['--max-tier','7']])
 def test_site_tier_bounds_and_observed_tier_output(source_factory, monkeypatch, problem, command, bounds):
     from rich.console import Console
-    from algorithm_problem_picker.models import Rated
+    from algorithm_problem_picker.jungol_models import Rated
     source, calls = source_factory
     monkeypatch.setattr(source,'collect',lambda *args:CompletedListing((problem(tier=Rated(8)),)))
     monkeypatch.setattr(cli,'out',Console(width=180,highlight=False,markup=False))
