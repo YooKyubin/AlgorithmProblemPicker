@@ -198,10 +198,24 @@ def test_raw_sources_preserve_commandline_and_legacy_last_value(synthetic_platfo
 
 
 @pytest.mark.parametrize('command', ['list', 'recommend'])
-def test_omitted_unsupported_defaults_are_not_requests(synthetic_platform, command):
+def test_omitted_unsupported_defaults_are_not_requests(synthetic_platform, monkeypatch, command):
+    from rich.console import Console
     _, calls = synthetic_platform
+    monkeypatch.setattr(cli, 'out', Console(width=180, highlight=False, markup=False))
     result = runner.invoke(cli.app, ['--platform', 'test-platform', command])
     assert result.exit_code == 0, result.output
+    message = ' '.join(result.stdout.split())
+    assert '번호 제목 합성 난도 링크' in message
+    row = next(line.split() for line in result.stdout.splitlines() if line.lstrip().startswith('1000 '))
+    assert row == ['1000', '합성', '문제', '150', 'https://example.test/problems/1000']
+    requested = 1 if command == 'recommend' else 20
+    assert f'조회 1 · 적격 1 · 요청 {requested}' in message
+    assert ('반환 1' if command == 'recommend' else '표시 1') in message
+    assert '합성 난도 100..200 점수' in message
+    assert all(note in result.stdout for note in SyntheticPolicy.info.observation_notes)
+    assert all(text not in result.stdout for text in
+               ('정답률', '정답 제출 수', '미확인', 'status=', '티어', '목록 관측'))
+    assert '미제공으로' not in result.stderr
     raw = calls[0][1]
     assert raw.supplied_options == frozenset()
     assert calls[1:] == ['factory', 'entered', 'prepared', 'collected', 'closed']

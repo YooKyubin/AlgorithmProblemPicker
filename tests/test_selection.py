@@ -121,8 +121,11 @@ def test_missing_statistics_are_not_zero(problem, metric, bounds, expected):
              problem(1001,rate=Known(Decimal('20')),accepted=Known(20)),
              problem(1002,rate=Unavailable(),accepted=Unavailable())]
     options = {boundary+'_'+metric:Decimal(value) if metric == 'rate' else value for boundary,value in bounds.items()}
-    eligible, omitted = policy.filter_listing(items+items[2:],SearchCriteria(**options))
+    later = [problem(rate=Unavailable(),accepted=Unavailable()),
+             problem(1002,rate=Known(Decimal('0')),accepted=Known(0))]
+    eligible, omitted = policy.filter_listing(items+later,SearchCriteria(**options))
     assert [item.id for item in eligible] == expected
+    assert all(item is items[item.id-1000] for item in eligible)
     assert omitted == (1 if bounds else 0)
 
 
