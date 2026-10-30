@@ -2,7 +2,7 @@
 
 이 가이드는 **구현 후** 수행할 검증 절차다. 계획 작성 시점에는 새 실행 이름·플랫폼 경계·새 테스트가 구현되지 않았다. 아래 명령을 이미 통과한 결과로 해석하지 않는다.
 
-**현재 구현 범위 (2026-10-30)**: T001~T007의 공통 기반 분리만 완료했다. 현재 설치 명령은 `jpick`이며 `--platform` 선택은 아직 노출하지 않는다. 아래의 `algo-pick`·플랫폼 선택·합성 플랫폼 수용 절차는 후속 작업용이다. 이번 실행 결과는 문서 끝의 검증 기록을 따른다.
+**현재 구현 범위 (2026-10-30)**: T001~T012까지 완료했다. 설치 명령은 `algo-pick`이며 명령 앞의 `--platform` 선택과 정올 기본값을 제공한다. 미지원 필터의 값 해석 전 검사·선택 플랫폼별 help·합성 플랫폼 수용과 최종 배포/문서 정합성은 후속 범위다. 실제 실행 결과는 문서 끝의 검증 기록을 따른다.
 
 ## 전제와 설치
 
@@ -189,3 +189,37 @@ git diff --check
 | diff 공백 검사 | 통과 |
 
 T001~T007을 완료 표시했다. 이 범위에서 남은 테스트 실패는 없다. T008 이후의 새 실행 이름·플랫폼 선택·지원 검사 순서·플랫폼별 help·합성 CLI 확장·최종 배포/문서 수용은 미완료로 유지한다. 실제 사이트·기본 브라우저 호출·독립 복사본 설치·별도 전체 `pytest -q` 명령·커밋은 이번 범위에서 수행하지 않았다. 선택적 before/after implement 커밋 훅은 실행하지 않았다.
+
+### 2026-10-30 — T008~T012 새 명령과 플랫폼 선택
+
+기준은 기반 커밋 `d9df7cc`다. requirements 체크리스트 16/16 완료와 기존 Python ignore 패턴을 읽기 전용 확인했다. 이 구간은 설치 실행 키·루트 Context의 선택 바인딩·고정 정올의 기본/명시 세 명령만 다루며 T013 이후는 진행하지 않았다.
+
+| 완료 작업 | 변경과 확인 |
+| --- | --- |
+| T008 | `tests/test_cli.py`에서 기본/명시 정올의 list/recommend/open 6개 흐름을 확인했다. 조회는 전체 25개 중 적격 24개를 정렬 후 기본 20개 표시, 추천은 동일 전체 적격 집합에서 중복 없는 24개/요청 30개·부족 6개를 관측했다. 사용자 조건·집계·스트림을 비교하고 기본 추천 1개도 양쪽 선택에서 확인했다. help/version/open의 팩터리 0회, 중간 무효 ID의 전달 0회, 고유 링크·일부 실패에도 모든 링크 시도·코드 1을 검증했다. |
+| T009 | `[project.scripts]`는 `algo-pick` 하나로 변경했다. 배포 이름·내부 모듈·의존성 잠금은 유지했고 현재 로컬 패키지 1개만 재설치해 메타데이터를 반영했다. 옛 launcher 자동 삭제를 구현하지 않았다. |
+| T010 | 루트 callback이 문자열 플랫폼을 정적 레지스트리로 선택해 Context에 보관하며 파싱·정렬·단일 소스 with·표시·open이 그 바인딩을 사용한다. 루트 help는 새 이름·옵션 위치·jungol 기본값/선택 가능 값을 안내한다. open은 raw ID 전체를 정책에서 검증한 후에만 고유 URL을 전달한다. |
+| T011 | 기반 정올 정책의 행·조건·링크·주의 문구가 기존 티어 약칭/미정/미확인·Decimal 정밀도·중복 정답 제출 의미를 보존함을 기존 CLI 회귀와 새 흐름 검증으로 확인했다. 이미 충족한 순수 정책 구현을 불필요하게 다시 작성하지 않았다. |
+| T012 | 관련 CLI/서비스 검증과 실제 설치 실행 파일의 version·루트/세 명령 help·console_scripts를 확인했다. |
+
+테스트를 먼저 추가한 상태에서 아래 선택 실행은 **6 failed, 9 passed, 426 deselected in 1.52s**였다. 실패 원인은 새 루트 이름/플랫폼 옵션 미구현이며 기존 열기/무효 ID 동작은 통과했다. 구현 후 첫 전체 관련 실행은 477개가 통과했고, 기본 추천의 명시 정올 조합까지 보완한 최종 결과는 다음과 같다.
+
+```powershell
+uv run --locked python -m pytest -q tests/test_cli.py tests/test_service.py
+uv run --locked algo-pick --version
+uv run --locked algo-pick --help
+uv run --locked algo-pick --platform jungol list --help
+uv run --locked algo-pick --platform jungol recommend --help
+uv run --locked algo-pick --platform jungol open --help
+uv run --locked python -c "from importlib.metadata import distribution; scripts={e.name for e in distribution('algorithm-problem-picker').entry_points if e.group=='console_scripts'}; assert scripts=={'algo-pick'}, scripts"
+git diff --check
+```
+
+- 최종 관련 회귀: **478 passed in 1.87s**.
+- 실제 설치 실행: version은 **0.1.0**, 루트 및 명시 정올 세 명령 help는 모두 **exit 0**.
+- 설치 메타데이터: **console_scripts = {'algo-pick'}**.
+- `git diff --check`: 통과. `uv.lock`·정올 DOM/source·헌장은 변경하지 않았다.
+- 환경 기록: 새 `dist/uv-cache`의 offline 빌드 시 hatchling 캐시가 없어 해당 시도는 실패했다. 기존 캐시를 사용할 수 있는 하위 프로세스 허용 환경에서 위 locked 명령으로 로컬 패키지만 재설치했고 검증을 완료했다. 새 의존성이나 버전 변경은 없다.
+- 실제 사이트·기본 브라우저·전체 pytest·DOM 재실행·독립 내보내기 설치는 수행하지 않았다. before/after implement 선택적 커밋 훅은 부모가 구간 검토 후 커밋하므로 실행하지 않았다.
+
+이 구간의 알려진 테스트 실패는 없다. 플랫폼별 지원 검사 순서·구성 오류 처리·고유 값 진단/동적 help·합성 수용과 현재 사용 문서 변경은 이후 작업에 남아 있다.

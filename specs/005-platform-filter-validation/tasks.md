@@ -52,14 +52,14 @@
 
 ### Tests for User Story 1
 
-- [ ] T008 [US1] `tests/test_cli.py`에 기본/명시 jungol의 6개 조합과 루트/세 명령 help·version 검증을 먼저 추가한다. list 기본 20개·recommend 기본 1개·전체 후보 처리·사용자 조건·출력 스트림을 비교하고, open은 `1000 1000 1001`의 입력 순서 고유 URL·일부 실패에도 전 링크 시도·코드 1을 검증한다. 무효 ID가 중간에 있어도 브라우저 호출 0회이며 help/version/open은 source factory 0회임을 확인한다.
+- [X] T008 [US1] `tests/test_cli.py`에 기본/명시 jungol의 6개 조합과 루트/세 명령 help·version 검증을 먼저 추가한다. list 기본 20개·recommend 기본 1개·전체 후보 처리·사용자 조건·출력 스트림을 비교하고, open은 `1000 1000 1001`의 입력 순서 고유 URL·일부 실패에도 전 링크 시도·코드 1을 검증한다. 무효 ID가 중간에 있어도 브라우저 호출 0회이며 help/version/open은 source factory 0회임을 확인한다.
 
 ### Implementation for User Story 1
 
-- [ ] T009 [US1] `pyproject.toml`의 `[project.scripts]` 실행 키를 `algo-pick` 하나로 변경한다. 배포 이름 `algorithm-problem-picker`와 내부 모듈 이름은 유지하고 jpick 호환 키를 추가하지 않는다. 새 설치 메타데이터로 확인하며 기존 사용자 환경의 옛 launcher를 자동 삭제하지 않는다.
-- [ ] T010 [US1] `src/algorithm_problem_picker/cli.py`의 루트 callback에 명령 앞의 `--platform`과 기본 jungol 선택·Context 바인딩을 연결하고, `_run`에서 선택 팩터리의 단일 with → 공통 Picker → 공통 표시를 호출한다. 출력은 정책의 columns/format_row/format_conditions/observation_notes를 사용하며 “열 수와 행 길이의 일치는 내부 불변식이다.”를 assertion으로 확인한다. open은 raw ID 전체를 선택 정책으로 검증한 후 “입력 순서대로 중복 제거된 링크를 만든다.”를 적용하고 모든 고유 URL을 출력/전달한다. “중간 번호가 무효이면 아무 링크도 열지 않는다.”와 소스 미생성을 지키며 정올 URL 생성·모델 필드 접근을 CLI에서 제거한다. 기본/명시 플랫폼·실행 이름·옵션 위치를 루트 help에 안내하고 기존 코드 0/1/2/130·스트림을 보존한다.
-- [ ] T011 [US1] `src/algorithm_problem_picker/jungol_policy.py`에서 정올 링크 생성·행/조건·관측 주의 문구를 완성한다. 양의 정수 ID·URL 일치·티어 약칭/미정/미확인·정답률 원래 Decimal 정밀도·중복 정답 제출 의미를 유지하고 정올의 기존 표·조건·주의 문구를 재현한다.
-- [ ] T012 [US1] `tests/test_cli.py`의 US1 사례와 관련 `tests/test_service.py`를 실행하고 `uv run --locked algo-pick --version`·루트/세 명령 help 및 새 설치 console_scripts가 `{'algo-pick'}`인지 확인해 `specs/005-platform-filter-validation/quickstart.md`에 기록한다. 메타데이터가 오래됐으면 해당 패키지만 재설치하고 무관한 잠금 변경은 만들지 않는다.
+- [X] T009 [US1] `pyproject.toml`의 `[project.scripts]` 실행 키를 `algo-pick` 하나로 변경한다. 배포 이름 `algorithm-problem-picker`와 내부 모듈 이름은 유지하고 jpick 호환 키를 추가하지 않는다. 새 설치 메타데이터로 확인하며 기존 사용자 환경의 옛 launcher를 자동 삭제하지 않는다.
+- [X] T010 [US1] `src/algorithm_problem_picker/cli.py`의 루트 callback에 명령 앞의 `--platform`과 기본 jungol 선택·Context 바인딩을 연결하고, `_run`에서 선택 팩터리의 단일 with → 공통 Picker → 공통 표시를 호출한다. 출력은 정책의 columns/format_row/format_conditions/observation_notes를 사용하며 “열 수와 행 길이의 일치는 내부 불변식이다.”를 assertion으로 확인한다. open은 raw ID 전체를 선택 정책으로 검증한 후 “입력 순서대로 중복 제거된 링크를 만든다.”를 적용하고 모든 고유 URL을 출력/전달한다. “중간 번호가 무효이면 아무 링크도 열지 않는다.”와 소스 미생성을 지키며 정올 URL 생성·모델 필드 접근을 CLI에서 제거한다. 기본/명시 플랫폼·실행 이름·옵션 위치를 루트 help에 안내하고 기존 코드 0/1/2/130·스트림을 보존한다.
+- [X] T011 [US1] `src/algorithm_problem_picker/jungol_policy.py`에서 정올 링크 생성·행/조건·관측 주의 문구를 완성한다. 양의 정수 ID·URL 일치·티어 약칭/미정/미확인·정답률 원래 Decimal 정밀도·중복 정답 제출 의미를 유지하고 정올의 기존 표·조건·주의 문구를 재현한다.
+- [X] T012 [US1] `tests/test_cli.py`의 US1 사례와 관련 `tests/test_service.py`를 실행하고 `uv run --locked algo-pick --version`·루트/세 명령 help 및 새 설치 console_scripts가 `{'algo-pick'}`인지 확인해 `specs/005-platform-filter-validation/quickstart.md`에 기록한다. 메타데이터가 오래됐으면 해당 패키지만 재설치하고 무관한 잠금 변경은 만들지 않는다.
 
 **Checkpoint**: US1의 새 명령·기본/명시 정올 6개 흐름을 독립 시연할 수 있다. 전체 기능 완료를 뜻하지 않는다.
 

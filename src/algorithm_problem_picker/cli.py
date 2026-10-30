@@ -1,4 +1,4 @@
-"""jpick commands and dependency composition."""
+"""algo-pick commands and dependency composition."""
 
 from importlib.metadata import version
 import webbrowser
@@ -14,8 +14,9 @@ from .models import Order, Progress, RawFilterInput, Result
 from .ports import FilterInputError, PlatformPolicy, SourceError
 from .service import Picker
 
-app = typer.Typer(invoke_without_command=True, no_args_is_help=True,
-                  help="JUNGOL 문제 검색·추천. 티어 B5=Bronze V ~ R1=Ruby I (기존 1~30도 지원).")
+app = typer.Typer(name='algo-pick', invoke_without_command=True, no_args_is_help=True,
+                  help="문제 검색·추천. --platform은 명령 앞에 지정합니다. 기본 플랫폼: jungol. "
+                       "선택 가능한 플랫폼: " + ', '.join(platforms.REGISTRY) + '.')
 out = Console(highlight=False, markup=False)
 err = Console(stderr=True, highlight=False, markup=False)
 
@@ -49,31 +50,45 @@ _LISTING_HELP = (
 )
 
 
-def _parse_filters(raw: RawFilterInput) -> SearchCriteria:
+def _selected(ctx: typer.Context) -> platforms.PlatformBinding:
+    assert isinstance(ctx.obj, platforms.PlatformBinding)
+    return ctx.obj
+
+
+def _parse_filters(ctx: typer.Context, raw: RawFilterInput) -> SearchCriteria:
     try:
-        return platforms.REGISTRY[platforms.DEFAULT_PLATFORM].policy.parse_filters(raw)
+        return _selected(ctx).policy.parse_filters(raw)
     except FilterInputError as error:
         raise typer.BadParameter(str(error), param_hint=error.option or None) from error
 
 
-def _reject_min_solvers(value: str | None) -> None:
+def _reject_min_solvers(ctx: typer.Context, value: str | None) -> None:
     if value is not None:
-        _parse_filters(RawFilterInput({'--min-solvers': value}))
+        _parse_filters(ctx, RawFilterInput({'--min-solvers': value}))
 
 
-def _reject_max_solvers(value: str | None) -> None:
+def _reject_max_solvers(ctx: typer.Context, value: str | None) -> None:
     if value is not None:
-        _parse_filters(RawFilterInput({'--max-solvers': value}))
+        _parse_filters(ctx, RawFilterInput({'--max-solvers': value}))
 
 
 @app.callback()
-def main(show_version: bool = typer.Option(False, "--version", is_eager=True)) -> None:
+def main(
+    ctx: typer.Context,
+    platform: str = typer.Option(platforms.DEFAULT_PLATFORM, '--platform', help='명령 앞에 지정하는 플랫폼'),
+    show_version: bool = typer.Option(False, "--version", is_eager=True),
+) -> None:
     if show_version:
         typer.echo(version("algorithm-problem-picker"))
         raise typer.Exit()
+    binding = platforms.REGISTRY.get(platform)
+    if binding is None:
+        raise typer.BadParameter(f'{platform!r}: 선택 가능한 플랫폼: ' + ', '.join(platforms.REGISTRY),
+                                 param_hint='--platform')
+    ctx.obj = binding
 
 
-def _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
+def _criteria(ctx: typer.Context, min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
               *, tier: list[str], rate: list[str], accepted: list[str]) -> SearchCriteria:
     boundaries = {
         '--min-tier': min_tier, '--max-tier': max_tier,
@@ -83,7 +98,7 @@ def _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted
     }
     values = {option: str(value) for option, value in boundaries.items() if value is not None}
     values.update({'--tier': tuple(tier), '--rate': tuple(rate), '--accepted': tuple(accepted)})
-    return _parse_filters(RawFilterInput(values))
+    return _parse_filters(ctx, RawFilterInput(values))
 
 
 def _progress(progress: Progress) -> None:
@@ -115,9 +130,8 @@ def _present(result: Result, policy: PlatformPolicy, recommend: bool = False) ->
         err.print(f"필터 지표 미제공으로 {result.omitted_unknown_count}개 제외")
 
 
-def _run(criteria: SearchCriteria, requested: int, recommend: bool = False,
+def _run(binding: platforms.PlatformBinding, criteria: SearchCriteria, requested: int, recommend: bool = False,
          sort: str = 'id', order: Order = Order.ASC) -> None:
-    binding = platforms.REGISTRY[platforms.DEFAULT_PLATFORM]
     try:
         err.print("조회 시작 · Ctrl+C 취소")
         with binding.source_factory(err.print) as source:
@@ -129,13 +143,14 @@ def _run(criteria: SearchCriteria, requested: int, recommend: bool = False,
         err.print("취소했습니다. 조회용 브라우저를 정리했습니다.")
         raise typer.Exit(130)
     except SourceError as error:
-        err.print(f"조회 실패: {error}\n입력 핸들·접속 상태와 정올 공개 화면을 확인하세요.")
+        err.print(f"조회 실패: {error}\n입력 핸들·접속 상태와 {binding.info.display_name} 공개 화면을 확인하세요.")
         raise typer.Exit(1)
 
 
 @app.command("list", help="전체 후보를 조회합니다. 티어는 사이트 검색 조건이며 표시 티어는 요청 범위 밖일 수 있습니다.",
              epilog=_LISTING_HELP)
 def list_command(
+    ctx: typer.Context,
     tier: TierRangeOption = [], rate: RateRangeOption = [], accepted: AcceptedRangeOption = [],
     min_tier: TierOption = None, max_tier: TierOption = None,
     min_rate: RateOption = None, max_rate: RateOption = None,
@@ -148,17 +163,18 @@ def list_command(
     limit: Annotated[int, typer.Option(min=1, help="전체 필터 후 표시 개수")] = 20,
 ) -> None:
     try:
-        sort_key = platforms.REGISTRY[platforms.DEFAULT_PLATFORM].policy.validate_list_options(sort, order)
+        sort_key = _selected(ctx).policy.validate_list_options(sort, order)
     except FilterInputError as error:
         raise typer.BadParameter(str(error), param_hint=error.option or None) from error
-    criteria = _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
+    criteria = _criteria(ctx, min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
                          tier=tier, rate=rate, accepted=accepted)
-    _run(criteria, limit, sort=sort_key, order=order)
+    _run(_selected(ctx), criteria, limit, sort=sort_key, order=order)
 
 
 @app.command(help="전체 적격 후보에서 중복 없이 추천. 티어는 사이트 검색 조건이며 표시 티어는 요청 범위 밖일 수 있습니다.",
              epilog=_LISTING_HELP)
 def recommend(
+    ctx: typer.Context,
     tier: TierRangeOption = [], rate: RateRangeOption = [], accepted: AcceptedRangeOption = [],
     min_tier: TierOption = None, max_tier: TierOption = None,
     min_rate: RateOption = None, max_rate: RateOption = None,
@@ -168,16 +184,17 @@ def recommend(
     status: StatusOption = Status.ALL, user: UserOption = "",
     count: Annotated[int, typer.Option(min=1, help="추천 개수")] = 1,
 ) -> None:
-    criteria = _criteria(min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
+    criteria = _criteria(ctx, min_tier, max_tier, min_rate, max_rate, min_accepted, max_accepted, status, user,
                          tier=tier, rate=rate, accepted=accepted)
-    _run(criteria, count, recommend=True)
+    _run(_selected(ctx), criteria, count, recommend=True)
 
 
 @app.command("open", help="명시한 문제 번호만 기본 브라우저로 엽니다.")
-def open_command(ids: Annotated[list[int], typer.Argument(min=1, help="양의 정수 문제 번호 (한 개 이상)")]) -> None:
+def open_command(ctx: typer.Context,
+                 ids: Annotated[list[str], typer.Argument(metavar='ID', help="문제 번호 (한 개 이상)")]) -> None:
     failed: list[str] = []
     try:
-        links = platforms.REGISTRY[platforms.DEFAULT_PLATFORM].policy.problem_links(tuple(map(str, ids)))
+        links = _selected(ctx).policy.problem_links(ids)
     except FilterInputError as error:
         raise typer.BadParameter(str(error), param_hint=error.option or None) from error
     for link in links:

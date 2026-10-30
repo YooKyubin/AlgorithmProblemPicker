@@ -388,8 +388,16 @@ def test_list_failure_no_partial_output(error, code, source_factory, monkeypatch
 
 def test_help_and_version_do_not_start_source(source_factory):
     _, calls = source_factory
-    for args in (['--help'], ['--version'], ['list','--help'], ['recommend','--help']):
-        assert runner.invoke(cli.app, args).exit_code == 0
+    for prefix in ([], ['--platform', 'jungol']):
+        for args in (['--help'], ['--version'], ['list','--help'], ['recommend','--help'], ['open','--help']):
+            result = runner.invoke(cli.app, [*prefix, *args], terminal_width=180)
+            assert result.exit_code == 0, result.output
+            if args[-1] == '--help':
+                assert 'algo-pick' in result.stdout
+    root = runner.invoke(cli.app, ['--help'], terminal_width=180).stdout
+    root = ' '.join(root.split())
+    assert '--platform' in root and 'jungol' in root
+    assert '명령 앞' in root and '기본' in root and '선택 가능' in root
     assert calls == []
 
 
@@ -513,8 +521,9 @@ def test_help_only_exposes_accepted(source_factory, command):
     assert 'solvers' not in result.stdout
 
 
-def test_recommend_default_and_shortage(source_factory):
-    result = runner.invoke(cli.app, ['recommend'])
+@pytest.mark.parametrize('platform_args', [[], ['--platform', 'jungol']])
+def test_recommend_default_and_shortage(source_factory, platform_args):
+    result = runner.invoke(cli.app, [*platform_args, 'recommend'])
     assert result.exit_code == 0, result.exception
     assert '요청 1' in result.stdout and '반환 0' in result.stdout and '부족 1' in result.stdout
 
@@ -550,7 +559,7 @@ def test_list_sort_options(source_factory, sort):
     assert result.exit_code == 0, result.exception
 
 
-@pytest.mark.parametrize('args', [[],['0'],['-1'],['1.5']])
+@pytest.mark.parametrize('args', [[],['0'],['-1'],['1.5'],['1000','0','1001'],['1000','invalid','1001']])
 def test_open_invalid_before_source(source_factory, args):
     _, calls = source_factory
     assert runner.invoke(cli.app, ['open', *args]).exit_code == 2
@@ -558,16 +567,67 @@ def test_open_invalid_before_source(source_factory, args):
 
 
 @pytest.mark.parametrize('fail_ids', [set(), {1001}, {1000,1001}])
-def test_open_unique_order_and_failure_links(source_factory, monkeypatch, fail_ids):
+@pytest.mark.parametrize('platform_args', [[], ['--platform', 'jungol']])
+def test_open_unique_order_and_failure_links(source_factory, monkeypatch, fail_ids, platform_args):
     _, source_calls = source_factory
     opened = []
     def open_url(url):
         opened.append(url)
         return int(url.rsplit('/',1)[1]) not in fail_ids
     monkeypatch.setattr(cli.webbrowser, 'open', open_url)
-    result = runner.invoke(cli.app, ['open','1000','1000','1001'])
+    result = runner.invoke(cli.app, [*platform_args, 'open','1000','1000','1001'])
     assert result.exit_code == (1 if fail_ids else 0)
     assert opened == ['https://jungol.co.kr/problem/1000','https://jungol.co.kr/problem/1001']
     assert all(url in result.stdout for url in opened)
     assert all(str(id) in result.stderr for id in fail_ids)
     assert not source_calls
+
+
+@pytest.mark.parametrize('command', ['list', 'recommend'])
+def test_default_and_explicit_jungol_share_complete_candidates(source_factory, monkeypatch, problem, command):
+    source, calls = source_factory
+    items = tuple(problem(1000 + i, rate=Known(Decimal('10') if i == 0 else Decimal('47.45')))
+                  for i in range(25))
+    user = UserReference('Case', 42, now())
+    prepared = []
+
+    def resolve(self, handle):
+        prepared.append(handle)
+        return user
+
+    def collect(self, criteria, reference):
+        assert reference is user
+        calls.append(criteria)
+        return CompletedListing(items)
+
+    populations = []
+
+    def sample(population, k):
+        populations.append(([item.id for item in population], k))
+        return list(reversed(population))[:k]
+
+    monkeypatch.setattr(source, 'resolve_user', resolve, raising=False)
+    monkeypatch.setattr(source, 'collect', collect)
+    monkeypatch.setattr('random.sample', sample)
+    results = []
+    criteria = []
+    for prefix in ([], ['--platform', 'jungol']):
+        calls.clear()
+        options = ['--count', '30'] if command == 'recommend' else []
+        result = runner.invoke(cli.app, [*prefix, command, '--min-rate', '40', '--status', 'solved',
+                                        '--user', '@Case', *options], terminal_width=180)
+        assert result.exit_code == 0, result.output
+        assert '조회 25' in result.stdout and '적격 24' in result.stdout and '@Case' in result.stdout
+        assert 'Ctrl+C' in result.stderr and 'Ctrl+C' not in result.stdout
+        ids = _problem_ids(result.stdout)
+        assert len(set(ids)) == len(ids)
+        if command == 'list':
+            assert ids == list(range(1001, 1021)) and '요청 20' in result.stdout
+        else:
+            assert set(ids) == set(range(1001, 1025)) and '부족 6' in result.stdout
+        assert calls[0:2] == ['constructed', 'started'] and calls[-1] == 'closed'
+        criteria.append(next(value for value in calls if isinstance(value, SearchCriteria)))
+        results.append(_result_summary(result.stdout))
+    assert criteria[0] == criteria[1] and results[0] == results[1]
+    assert prepared == ['Case', 'Case']
+    assert populations == ([(list(range(1001, 1025)), 24)] * 2 if command == 'recommend' else [])
