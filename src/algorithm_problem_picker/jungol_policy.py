@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 import random
 import re
 
-from .jungol_models import Problem, Rated, SearchCriteria, SortKey, Status, Unrated, UserReference
+from .jungol_models import CriteriaError, Problem, Rated, SearchCriteria, SortKey, Status, Unrated, UserReference
 from .models import FilterCapability, Known, Order, PlatformInfo, ProblemLink, RawFilterInput, RetiredOption, Unavailable
 from .ports import FilterInputError
 
@@ -20,7 +20,8 @@ JUNGOL_INFO = PlatformInfo(
     filters=(
         FilterCapability('tier', ('--tier', '--min-tier', '--max-tier'),
                          '사이트 검색 조건이며 표시 티어는 요청 범위 밖일 수 있습니다.', '티어',
-                         f'{_TIER_NAMES[0]}~{_TIER_NAMES[-1]}, 대소문자 무관 (기존 1~30도 지원)', _RANGE_HELP),
+                         f'{_TIER_NAMES[0]}~{_TIER_NAMES[-1]}, 대소문자 무관 (기존 1~30도 지원). '
+                         '예: S5..G1, G5.., ..S1', _RANGE_HELP),
         FilterCapability('rate', ('--rate', '--min-rate', '--max-rate'),
                          '목록에 표시된 정답률, 재계산하지 않음', '%', '0~100 유한 정수·소수, % 없이', _RANGE_HELP),
         FilterCapability('accepted', ('--accepted', '--min-accepted', '--max-accepted'),
@@ -37,6 +38,9 @@ JUNGOL_INFO = PlatformInfo(
     observation_notes=('티어·정답률·정답 제출 수는 각 목록 관측 시점의 값입니다. '
                        '정답 제출 수는 동일 사용자의 중복 정답 제출을 포함합니다.',),
     sort_help=', '.join(SortKey) + '; random과 --order desc 혼용 금지, 지표 동점은 번호 오름차순',
+    help_notes=('명시적인 빈 통계는 미제공이며 실제 0과 다릅니다. 해당 지표 필터가 있으면 제외하고 '
+                '없으면 미확인으로 표시합니다.',
+                '더 불러오기 버튼이 없으면 현재 목록으로 완료하며 이후 지연 반영은 보장하지 않습니다.'),
 )
 
 
@@ -122,6 +126,30 @@ def _accepted_boundary(raw: RawFilterInput, option: str) -> int | None:
     return count
 
 
+def _criteria_options(raw: RawFilterInput, fields: tuple[str, ...]) -> str:
+    options: list[str] = []
+    for name in fields:
+        if name == 'user_handle':
+            option = '--user'
+        elif name.startswith(('min_', 'max_')) and _ranges(raw, f'--{name[4:]}'):
+            option = f'--{name[4:]}'
+        else:
+            option = '--' + name.replace('_', '-')
+        if option not in options:
+            options.append(option)
+    supplied = [option for option in options if option in raw.supplied_options]
+    return ', '.join(supplied or options)
+
+
+def _rate_boundary(value: str | Decimal | None, option: str) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(value)
+    except InvalidOperation as error:
+        raise FilterInputError('정답률은 유한 소수 0~100이어야 합니다.', option=option) from error
+
+
 def _metric(value, suffix: str = '') -> str:
     return f'{value.value}{suffix}' if isinstance(value, Known) else '미확인'
 
@@ -152,12 +180,12 @@ class JungolPolicy:
         user = _value(raw, '--user')
         try:
             return SearchCriteria(min_tier, max_tier,
-                                  Decimal(min_rate) if min_rate is not None else None,
-                                  Decimal(max_rate) if max_rate is not None else None,
+                                  _rate_boundary(min_rate, _criteria_options(raw, ('min_rate',))),
+                                  _rate_boundary(max_rate, _criteria_options(raw, ('max_rate',))),
                                   min_accepted, max_accepted,
                                   Status.ALL if status is None else status, '' if user is None else user)
-        except (ValueError, InvalidOperation) as error:
-            raise FilterInputError(str(error)) from error
+        except CriteriaError as error:
+            raise FilterInputError(str(error), option=_criteria_options(raw, error.fields)) from error
 
     @staticmethod
     def validate_list_options(sort: str, order: Order) -> SortKey:
@@ -168,7 +196,7 @@ class JungolPolicy:
         except ValueError as error:
             raise FilterInputError('정렬 기준: ' + ', '.join(SortKey), option='--sort') from error
         if sort_key == SortKey.RANDOM and Order(order) == Order.DESC:
-            raise FilterInputError('random과 --order desc를 함께 지정할 수 없습니다.')
+            raise FilterInputError('random과 --order desc를 함께 지정할 수 없습니다.', option='--sort, --order')
         return sort_key
 
     @staticmethod

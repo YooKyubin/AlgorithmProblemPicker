@@ -81,6 +81,7 @@ class PlatformInfo:
     columns: tuple[str, ...]
     observation_notes: tuple[str, ...]
     sort_help: str
+    help_notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

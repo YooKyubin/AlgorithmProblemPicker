@@ -94,14 +94,14 @@
 
 ### Tests for User Story 3
 
-- [ ] T018 [P] [US3] `tests/test_cli.py`의 기존 범위/경계/사용자/정렬 회귀를 보존하고 이동 과정의 빈틈만 보완한다. B5~R1 대소문자/1~30, 열린/닫힌/동일 경계, Decimal 정밀도, 역전·100 초과·반복·혼용·사용자 조합·random+desc·개수 오류·legacy 전환을 확인한다. 기존 accepted 경계의 `+1`·공백·전각 숫자·`1_000` 허용과 새 범위 ASCII 문법의 차이도 확인하고 오류의 플랫폼·옵션·이유 및 외부 작업 0회를 관측한다.
-- [ ] T019 [P] [US3] T013의 합성 구성을 재사용해 `tests/test_platforms.py`에 정올 밖 난도 100~200의 유효/무효 입력·미지원 정렬 거부·자체 의미/단위 표시와 선택 플랫폼 help 검증을 추가한다. 루트/하위 help·version에서 팩터리 0회, 합성 help에서 정올 규칙을 지원 규칙으로 안내하지 않음, 순차 플랫폼 help 실행 간 전역 설명 오염 없음도 확인한다.
+- [X] T018 [P] [US3] `tests/test_cli.py`의 기존 범위/경계/사용자/정렬 회귀를 보존하고 이동 과정의 빈틈만 보완한다. B5~R1 대소문자/1~30, 열린/닫힌/동일 경계, Decimal 정밀도, 역전·100 초과·반복·혼용·사용자 조합·random+desc·개수 오류·legacy 전환을 확인한다. 기존 accepted 경계의 `+1`·공백·전각 숫자·`1_000` 허용과 새 범위 ASCII 문법의 차이도 확인하고 오류의 플랫폼·옵션·이유 및 외부 작업 0회를 관측한다.
+- [X] T019 [P] [US3] T013의 합성 구성을 재사용해 `tests/test_platforms.py`에 정올 밖 난도 100~200의 유효/무효 입력·미지원 정렬 거부·자체 의미/단위 표시와 선택 플랫폼 help 검증을 추가한다. 루트/하위 help·version에서 팩터리 0회, 합성 help에서 정올 규칙을 지원 규칙으로 안내하지 않음, 순차 플랫폼 help 실행 간 전역 설명 오염 없음도 확인한다.
 
 ### Implementation for User Story 3
 
-- [ ] T020 [US3] `src/algorithm_problem_picker/jungol_policy.py`의 parse_filters/validate_list_options를 완성한다. 데이터 모델의 “raw 필드에는 아직 의미 검증된 숫자라는 가정을 두지 않는다.”와 “필터와 정렬은 서로 다른 지원 항목이다.”를 적용한다. B5~R1/1~30·유한 Decimal 0~100·0 이상 제출 수·양 끝 포함·적어도 한 경계·하한≤상한·신구 혼용/범위 반복 금지·all/solved/unsolved·정확한 핸들·선행 @ 한 개·대소문자 보존을 유지한다. 기존 경계는 int(text)의 허용 문법을 보존하고 새 범위의 엄격한 문법을 확대 적용하지 않는다. retired_options와 `--sort solvers`는 대체 옵션·지표 변경을 안내한 뒤 반드시 거부한다. 정책 오류에 실제 옵션·이유를 담아 CLI가 플랫폼 이름과 코드 2로 표시하도록 한다.
-- [ ] T021 [US3] `src/algorithm_problem_picker/cli.py`의 공통 옵션 설명을 플랫폼 중립으로 정리하고 eager `--help` callback(`expose_value=False`)에서 `ctx.get_help()`와 선택 바인딩의 지원 필터·미지원 옵션·의미·단위·허용 값·조합·정렬 안내를 출력한다. 본문/소스 실행 전에 종료하며 command 전역 help를 변이하지 않는다. 정올 규칙과 help는 같은 지원 선언을 사용하고 루트 help는 실제 등록 jungol만 안내한다.
-- [ ] T022 [US3] `tests/test_cli.py`·`tests/test_platforms.py`의 US3 사례를 실행하고 `algo-pick --platform jungol list --help`·`recommend --help`의 실제 표시도 확인해 정올 문법 회귀와 합성 규칙 격리 결과를 `specs/005-platform-filter-validation/quickstart.md`에 기록한다.
+- [X] T020 [US3] `src/algorithm_problem_picker/jungol_policy.py`의 parse_filters/validate_list_options를 완성한다. 데이터 모델의 “raw 필드에는 아직 의미 검증된 숫자라는 가정을 두지 않는다.”와 “필터와 정렬은 서로 다른 지원 항목이다.”를 적용한다. B5~R1/1~30·유한 Decimal 0~100·0 이상 제출 수·양 끝 포함·적어도 한 경계·하한≤상한·신구 혼용/범위 반복 금지·all/solved/unsolved·정확한 핸들·선행 @ 한 개·대소문자 보존을 유지한다. 기존 경계는 int(text)의 허용 문법을 보존하고 새 범위의 엄격한 문법을 확대 적용하지 않는다. retired_options와 `--sort solvers`는 대체 옵션·지표 변경을 안내한 뒤 반드시 거부한다. 정책 오류에 실제 옵션·이유를 담아 CLI가 플랫폼 이름과 코드 2로 표시하도록 한다.
+- [X] T021 [US3] `src/algorithm_problem_picker/cli.py`의 공통 옵션 설명을 플랫폼 중립으로 정리하고 eager `--help` callback(`expose_value=False`)에서 `ctx.get_help()`와 선택 바인딩의 지원 필터·미지원 옵션·의미·단위·허용 값·조합·정렬 안내를 출력한다. 본문/소스 실행 전에 종료하며 command 전역 help를 변이하지 않는다. 정올 규칙과 help는 같은 지원 선언을 사용하고 루트 help는 실제 등록 jungol만 안내한다.
+- [X] T022 [US3] `tests/test_cli.py`·`tests/test_platforms.py`의 US3 사례를 실행하고 `algo-pick --platform jungol list --help`·`recommend --help`의 실제 표시도 확인해 정올 문법 회귀와 합성 규칙 격리 결과를 `specs/005-platform-filter-validation/quickstart.md`에 기록한다.
 
 **Checkpoint**: 플랫폼별 값 해석과 도움말이 일치하며 정올 규칙이 합성 플랫폼에 강제되지 않는다.
 

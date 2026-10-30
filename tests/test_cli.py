@@ -631,3 +631,47 @@ def test_default_and_explicit_jungol_share_complete_candidates(source_factory, m
     assert criteria[0] == criteria[1] and results[0] == results[1]
     assert prepared == ['Case', 'Case']
     assert populations == ([(list(range(1001, 1025)), 24)] * 2 if command == 'recommend' else [])
+
+
+@pytest.mark.parametrize('command', ['list', 'recommend'])
+@pytest.mark.parametrize('value', ['+1', ' 1 ', '１', '1_000'])
+def test_legacy_accepted_numbers_keep_int_grammar(source_factory, command, value):
+    _, calls = source_factory
+    result = runner.invoke(cli.app, [command, '--min-accepted', value])
+    assert result.exit_code == 0, result.output
+    assert next(call for call in calls if isinstance(call, SearchCriteria)).min_accepted == int(value)
+    calls.clear()
+    result = runner.invoke(cli.app, [command, '--accepted', f'{value}..'])
+    assert result.exit_code == 2 and calls == [] and result.stdout == ''
+    assert '--accepted' in result.stderr and 'jungol' in result.stderr
+
+
+@pytest.mark.parametrize('command', ['list', 'recommend'])
+@pytest.mark.parametrize('arguments,options', [
+    (['--min-rate', 'invalid'], ['--min-rate']),
+    (['--min-rate', 'NaN'], ['--min-rate']),
+    (['--max-rate', '101'], ['--max-rate']),
+    (['--min-rate', '80', '--max-rate', '20'], ['--min-rate', '--max-rate']),
+    (['--min-tier', 'G3', '--max-tier', 'S2'], ['--min-tier', '--max-tier']),
+    (['--status', 'invalid'], ['--status']),
+    (['--status', 'solved'], ['--status', '--user']),
+    (['--status', 'all', '--user', 'Case'], ['--status', '--user']),
+])
+def test_jungol_value_errors_identify_original_options(source_factory, command, arguments, options):
+    _, calls = source_factory
+    result = runner.invoke(cli.app, [command, *arguments], terminal_width=240)
+    assert result.exit_code == 2 and result.stdout == '' and calls == []
+    assert 'jungol' in result.stderr
+    assert all(option in result.stderr for option in options)
+
+
+@pytest.mark.parametrize('arguments,options', [
+    (['--sort', 'invalid'], ['--sort']),
+    (['--sort', 'random', '--order', 'desc'], ['--sort', '--order']),
+])
+def test_jungol_sort_errors_identify_platform_before_source(source_factory, arguments, options):
+    _, calls = source_factory
+    result = runner.invoke(cli.app, ['list', *arguments], terminal_width=240)
+    assert result.exit_code == 2 and result.stdout == '' and calls == []
+    assert 'jungol' in result.stderr
+    assert all(option in result.stderr for option in options)

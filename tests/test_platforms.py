@@ -55,8 +55,9 @@ class SyntheticPolicy:
         if ranges:
             if len(ranges) != 1:
                 raise FilterInputError('합성 난도 범위는 한 번만 지정하세요.', '--tier')
-            lower, upper = ranges[0].split('..')
         try:
+            if ranges:
+                lower, upper = ranges[0].split('..')
             lower, upper = int(lower), int(upper)
         except ValueError as error:
             raise FilterInputError('합성 난도는 100~200 정수입니다.', '--tier') from error
@@ -250,3 +251,50 @@ def test_invalid_configuration_warns_then_fails_on_use(synthetic_platform, monke
     unaffected = 'test-platform' if problem == 'missing-default' else 'jungol'
     result = runner.invoke(cli.app, ['--platform', unaffected, 'list', '--help'])
     assert result.exit_code == 0 and calls == []
+
+
+@pytest.mark.parametrize('command', ['list', 'recommend'])
+@pytest.mark.parametrize('value,valid', [('150..160', True), ('99..150', False), ('150..201', False),
+                                       ('not-a-score', False)])
+def test_selected_platform_uses_its_own_difficulty_rules(synthetic_platform, command, value, valid):
+    _, calls = synthetic_platform
+    result = runner.invoke(cli.app, ['--platform', 'test-platform', command, '--tier', value],
+                           terminal_width=240)
+    if valid:
+        assert result.exit_code == 0, result.output
+        assert '합성 난도 150..160 점수' in result.stdout
+        assert 'factory' in calls and 'collected' in calls
+    else:
+        assert result.exit_code == 2 and result.stdout == ''
+        assert '--tier' in result.stderr and 'test-platform' in result.stderr and '100~200' in result.stderr
+        assert len(calls) == 1 and calls[0][0] == 'parse'
+
+
+def test_selected_platform_sort_error_names_platform(synthetic_platform):
+    _, calls = synthetic_platform
+    result = runner.invoke(cli.app, ['--platform', 'test-platform', 'list', '--sort', 'accepted'], terminal_width=240)
+    assert result.exit_code == 2 and result.stdout == ''
+    assert '--sort' in result.stderr and 'test-platform' in result.stderr
+    message = ' '.join(result.stderr.replace('│', '').split())
+    assert 'id, difficulty' in message and len(calls) == 1 and calls[0][0] == 'parse'
+
+
+@pytest.mark.parametrize('command', ['list', 'recommend'])
+def test_help_uses_selected_rules_without_global_mutation(synthetic_platform, command):
+    _, calls = synthetic_platform
+    synthetic = runner.invoke(cli.app, ['--platform', 'test-platform', command, '--help'], terminal_width=240)
+    jungol = runner.invoke(cli.app, ['--platform', 'jungol', command, '--help'], terminal_width=240)
+    repeated = runner.invoke(cli.app, ['--platform', 'test-platform', command, '--help'], terminal_width=240)
+    assert synthetic.exit_code == jungol.exit_code == repeated.exit_code == 0
+    message = ' '.join(synthetic.stdout.split())
+    assert 'test-platform' in message and '합성 난도' in message and '점수' in message and '100~200' in message
+    assert '지원하지 않는 필터' in message and '--accepted' in message and '--status' in message
+    assert 'B5~R1' not in message and '1~30' not in message and '사이트 검색 조건' not in message
+    assert '중복 정답 제출' not in message and '더 불러오기' not in message
+    assert synthetic.stdout == repeated.stdout and '100~200' not in jungol.stdout
+    assert 'jungol' in jungol.stdout and 'B5~R1' in jungol.stdout
+    root = runner.invoke(cli.app, ['--help'], terminal_width=240)
+    version = runner.invoke(cli.app, ['--platform', 'test-platform', '--version'])
+    assert root.exit_code == version.exit_code == 0
+    assert 'test-platform' in root.stdout and 'jungol' in root.stdout
+    assert calls == []

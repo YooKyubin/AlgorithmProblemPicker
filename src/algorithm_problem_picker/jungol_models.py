@@ -70,6 +70,12 @@ class SortKey(StrEnum):
     RANDOM = "random"
 
 
+class CriteriaError(ValueError):
+    def __init__(self, message: str, fields: tuple[str, ...]):
+        super().__init__(message)
+        self.fields = fields
+
+
 @dataclass(frozen=True)
 class SearchCriteria:
     min_tier: int | None = None
@@ -82,32 +88,36 @@ class SearchCriteria:
     user_handle: str = ""
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "status", Status(self.status))
+        try:
+            object.__setattr__(self, "status", Status(self.status))
+        except ValueError as error:
+            raise CriteriaError(str(error), ('status',)) from error
         supplied_user = bool(self.user_handle)
         handle = self.user_handle.removeprefix("@")
         object.__setattr__(self, "user_handle", handle)
         for name in ("min_tier", "max_tier"):
             value = getattr(self, name)
             if value is not None and (type(value) is not int or not 1 <= value <= 30):
-                raise ValueError("티어는 1~30 정수여야 합니다.")
+                raise CriteriaError("티어는 1~30 정수여야 합니다.", (name,))
         for name in ("min_rate", "max_rate"):
             value = getattr(self, name)
             if value is not None and (
                 not isinstance(value, Decimal) or not value.is_finite() or not 0 <= value <= 100
             ):
-                raise ValueError("정답률은 유한 소수 0~100이어야 합니다.")
+                raise CriteriaError("정답률은 유한 소수 0~100이어야 합니다.", (name,))
         for name in ("min_accepted", "max_accepted"):
             value = getattr(self, name)
             if value is not None and (type(value) is not int or value < 0):
-                raise ValueError("정답 제출 수는 0 이상의 정수여야 합니다.")
+                raise CriteriaError("정답 제출 수는 0 이상의 정수여야 합니다.", (name,))
         for metric in ("tier", "rate", "accepted"):
             lower, upper = getattr(self, f"min_{metric}"), getattr(self, f"max_{metric}")
             if lower is not None and upper is not None and lower > upper:
-                raise ValueError(f"{metric}: 하한은 상한 이하여야 합니다.")
+                raise CriteriaError(f"{metric}: 하한은 상한 이하여야 합니다.",
+                                    (f'min_{metric}', f'max_{metric}'))
         if self.status != Status.ALL and (not handle.strip() or handle.startswith("@")):
-            raise ValueError("solved/unsolved에는 정확한 --user 핸들이 필요합니다.")
+            raise CriteriaError("solved/unsolved에는 정확한 --user 핸들이 필요합니다.", ('status', 'user_handle'))
         if self.status == Status.ALL and supplied_user:
-            raise ValueError("--status all과 --user를 함께 지정할 수 없습니다.")
+            raise CriteriaError("--status all과 --user를 함께 지정할 수 없습니다.", ('status', 'user_handle'))
 
 
 @dataclass(frozen=True)

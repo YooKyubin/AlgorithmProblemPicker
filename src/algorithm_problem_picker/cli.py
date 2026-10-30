@@ -14,38 +14,69 @@ from .ports import FilterInputError, PlatformPolicy, SourceError
 from .service import Picker
 
 app = typer.Typer(name='algo-pick', invoke_without_command=True, no_args_is_help=True,
-                  help="문제 검색·추천. --platform은 명령 앞에 지정합니다. 기본 플랫폼: jungol. "
-                       "선택 가능한 플랫폼: " + ', '.join(platforms.REGISTRY) + '.')
+                  help="문제 검색·추천. --platform은 명령 앞에 지정합니다.")
 out = Console(highlight=False, markup=False)
 err = Console(stderr=True, highlight=False, markup=False)
 
-TierOption = Annotated[str | None, typer.Option(
-    help="사이트 검색 조건인 티어 경계 B5~R1, 대소문자 무관 (기존 1~30도 지원, 포함). 표시 티어는 범위 밖일 수 있습니다.")]
-RateOption = Annotated[str | None, typer.Option(help="정답률 0~100 소수, % 없이 (포함)")]
-AcceptedOption = Annotated[str | None, typer.Option(help="정답 제출 수, 동일 사용자의 중복 정답 제출 포함 (경계 포함)")]
-StatusOption = Annotated[str, typer.Option(help="공개 기준 사용자 풀이 여부")]
-UserOption = Annotated[str, typer.Option("--user", help="정확한 공개 핸들. @ 접두사 허용")]
+TierOption = Annotated[str | None, typer.Option(help="난이도 경계. 허용 값과 의미는 선택 플랫폼의 지원 정보 참고")]
+RateOption = Annotated[str | None, typer.Option(help="정답률 경계. 선택 플랫폼의 단위·허용 값 참고")]
+AcceptedOption = Annotated[str | None, typer.Option(help="정답 제출 수 경계. 선택 플랫폼의 지원 정보 참고")]
+StatusOption = Annotated[str, typer.Option(help="사용자 풀이 조건. 선택 플랫폼의 지원 정보 참고")]
+UserOption = Annotated[str, typer.Option("--user", help="사용자 식별자. 선택 플랫폼의 지원 정보 참고")]
 
 
 TierRangeOption = Annotated[list[str], typer.Option(metavar="MIN..MAX",
-    help="사이트 검색 조건 B5~R1, 대소문자 무관 (기존 1~30도 지원). 예: S5..G1, G5.., ..S1. 표시 티어는 범위 밖일 수 있습니다.")]
+    help="난이도 범위. 표기와 허용 값은 선택 플랫폼의 지원 정보 참고")]
 RateRangeOption = Annotated[list[str], typer.Option(metavar="MIN..MAX",
-    help="정답률 0~100 소수, % 없이")]
+    help="정답률 범위. 표기와 허용 값은 선택 플랫폼의 지원 정보 참고")]
 AcceptedRangeOption = Annotated[list[str], typer.Option(metavar="MIN..MAX",
-    help="정답 제출 수 0 이상 정수, 동일 사용자의 중복 정답 제출 포함")]
-
-
-_LISTING_HELP = (
-    "범위 옵션은 MIN..MAX, MIN.., ..MAX 형태로 양 끝 포함이며 한 번만 지정합니다. "
-    "기존 --min-*/--max-* 옵션은 유지하며 같은 지표의 범위 옵션과 혼용할 수 없습니다. "
-    "명시적인 빈 통계는 미제공이며 실제 0과 다릅니다. 해당 지표 필터가 있으면 제외하고 없으면 미확인으로 표시합니다. "
-    "더 불러오기 버튼이 없으면 현재 목록으로 완료하며 이후 지연 반영은 보장하지 않습니다."
-)
+    help="정답 제출 수 범위. 표기와 허용 값은 선택 플랫폼의 지원 정보 참고")]
 
 
 def _selected(ctx: typer.Context) -> platforms.PlatformBinding:
     assert isinstance(ctx.obj, platforms.PlatformBinding)
     return ctx.obj
+
+
+def _input_error(binding: platforms.PlatformBinding, error: FilterInputError) -> typer.BadParameter:
+    return typer.BadParameter(f'{binding.info.display_name}({binding.info.key}): {error}',
+                              param_hint=error.option or None)
+
+
+def _show_help(ctx: typer.Context, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
+    typer.echo(ctx.get_help())
+    if ctx.parent is None:
+        typer.echo(f'기본 플랫폼: {platforms.DEFAULT_PLATFORM}. 선택 가능한 플랫폼: '
+                  + ', '.join(platforms.REGISTRY) + '.')
+    else:
+        binding = _selected(ctx)
+        typer.echo(f'플랫폼: {binding.info.display_name}({binding.info.key})')
+        if ctx.command.name in {'list', 'recommend'}:
+            supported: set[str] = set()
+            typer.echo('지원 필터:')
+            for capability in binding.info.filters:
+                if ctx.command.name not in capability.commands:
+                    continue
+                supported.update(capability.option_names)
+                unit = f' (단위: {capability.unit})' if capability.unit else ''
+                typer.echo(', '.join(capability.option_names) + ': ' + capability.meaning + unit)
+                typer.echo('  허용 값: ' + capability.value_help)
+                typer.echo('  조합: ' + capability.combination_help)
+            visible = {option for parameter in ctx.command.params if not parameter.hidden
+                       for option in parameter.opts if option in FILTER_OPTION_NAMES}
+            unsupported = visible - supported
+            if unsupported:
+                typer.echo('지원하지 않는 필터: ' + ', '.join(sorted(unsupported)))
+            typer.echo('정렬: ' + binding.info.sort_help)
+            for note in binding.info.help_notes:
+                typer.echo(note)
+    raise typer.Exit()
+
+
+HelpOption = Annotated[bool, typer.Option('--help', callback=_show_help, is_eager=True, expose_value=False,
+                                        help='선택 플랫폼의 지원 정보와 도움말 표시')]
 
 
 def _parse_filters(ctx: typer.Context, raw: RawFilterInput):
@@ -61,8 +92,7 @@ def _parse_filters(ctx: typer.Context, raw: RawFilterInput):
     try:
         return binding.policy.parse_filters(raw)
     except FilterInputError as error:
-        raise typer.BadParameter(f'{binding.info.display_name}({binding.info.key}): {error}',
-                                 param_hint=error.option or None) from error
+        raise _input_error(binding, error) from error
 
 
 @app.callback()
@@ -70,6 +100,7 @@ def main(
     ctx: typer.Context,
     platform: str = typer.Option(platforms.DEFAULT_PLATFORM, '--platform', help='명령 앞에 지정하는 플랫폼'),
     show_version: bool = typer.Option(False, "--version", is_eager=True),
+    show_help: HelpOption = False,
 ) -> None:
     if show_version:
         typer.echo(version("algorithm-problem-picker"))
@@ -150,8 +181,7 @@ def _run(binding: platforms.PlatformBinding, criteria, requested: int, recommend
         raise typer.Exit(1)
 
 
-@app.command("list", help="전체 후보를 조회합니다. 티어는 사이트 검색 조건이며 표시 티어는 요청 범위 밖일 수 있습니다.",
-             epilog=_LISTING_HELP)
+@app.command("list", help="전체 후보를 조회합니다.")
 def list_command(
     ctx: typer.Context,
     tier: TierRangeOption = [], rate: RateRangeOption = [], accepted: AcceptedRangeOption = [],
@@ -161,20 +191,20 @@ def list_command(
     min_solvers: Annotated[str | None, typer.Option(hidden=True)] = None,
     max_solvers: Annotated[str | None, typer.Option(hidden=True)] = None,
     status: StatusOption = 'all', user: UserOption = "",
-    sort: Annotated[str, typer.Option(help="전체 적격 후보 정렬: id, difficulty, rate, accepted, random")] = 'id',
-    order: Annotated[Order, typer.Option(help="정렬 방향. 지표 동점은 번호 오름차순")] = Order.ASC,
+    sort: Annotated[str, typer.Option(help="전체 적격 후보 정렬. 선택 플랫폼의 지원 정보 참고")] = 'id',
+    order: Annotated[Order, typer.Option(help="정렬 방향. 동점 처리는 선택 플랫폼의 규칙 적용")] = Order.ASC,
     limit: Annotated[int, typer.Option(min=1, help="전체 필터 후 표시 개수")] = 20,
+    show_help: HelpOption = False,
 ) -> None:
     criteria = _criteria(ctx)
     try:
         sort_key = _selected(ctx).policy.validate_list_options(sort, order)
     except FilterInputError as error:
-        raise typer.BadParameter(str(error), param_hint=error.option or None) from error
+        raise _input_error(_selected(ctx), error) from error
     _run(_selected(ctx), criteria, limit, sort=sort_key, order=order)
 
 
-@app.command(help="전체 적격 후보에서 중복 없이 추천. 티어는 사이트 검색 조건이며 표시 티어는 요청 범위 밖일 수 있습니다.",
-             epilog=_LISTING_HELP)
+@app.command(help="전체 적격 후보에서 중복 없이 추천합니다.")
 def recommend(
     ctx: typer.Context,
     tier: TierRangeOption = [], rate: RateRangeOption = [], accepted: AcceptedRangeOption = [],
@@ -185,6 +215,7 @@ def recommend(
     max_solvers: Annotated[str | None, typer.Option(hidden=True)] = None,
     status: StatusOption = 'all', user: UserOption = "",
     count: Annotated[int, typer.Option(min=1, help="추천 개수")] = 1,
+    show_help: HelpOption = False,
 ) -> None:
     criteria = _criteria(ctx)
     _run(_selected(ctx), criteria, count, recommend=True)
@@ -192,12 +223,13 @@ def recommend(
 
 @app.command("open", help="명시한 문제 번호만 기본 브라우저로 엽니다.")
 def open_command(ctx: typer.Context,
-                 ids: Annotated[list[str], typer.Argument(metavar='ID', help="문제 번호 (한 개 이상)")]) -> None:
+                 ids: Annotated[list[str], typer.Argument(metavar='ID', help="문제 번호 (한 개 이상)")],
+                 show_help: HelpOption = False) -> None:
     failed: list[str] = []
     try:
         links = _selected(ctx).policy.problem_links(ids)
     except FilterInputError as error:
-        raise typer.BadParameter(str(error), param_hint=error.option or None) from error
+        raise _input_error(_selected(ctx), error) from error
     for link in links:
         url = link.url
         out.print(url, soft_wrap=True)
