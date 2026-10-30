@@ -13,6 +13,18 @@ uv run jpick --help
 uv run jpick --version
 ```
 
+## 다른 프로젝트 안에서 사용
+
+코딩테스트 프로젝트의 `tools/jpick` 등에 소스 복사본을 넣으면 원본 저장소의 경로에 의존하지 않고 사용할 수 있다.
+이 저장소 루트에서 아래 명령을 실행한다. 대상은 새 폴더여야 하며 기존 폴더는 덮어쓰지 않는다.
+
+```sh
+uv run --no-project --python 3.12 python scripts/export_tool.py --target "../algorithm/tools/jpick"
+```
+
+Windows·Mac 설치, VS Code 작업 예제 연결, Git 공유와 업데이트 방법은 [다른 프로젝트 통합 가이드](docs/integration.md)를 참고한다.
+소스와 잠금 파일을 공유하고 `.venv`와 Chromium은 각 PC에서 설치한다. 내보내기는 원본의 실행 환경을 복사하거나 기존 VS Code 설정을 수정하지 않는다.
+
 ## 사용법
 
 ```powershell

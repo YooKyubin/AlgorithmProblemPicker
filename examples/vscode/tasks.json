@@ -1,0 +1,83 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "정올: 설치",
+            "detail": "복사본의 Python 실행 환경과 Playwright용 Chromium을 설치합니다. uv가 필요합니다.",
+            "type": "process",
+            "command": "uv",
+            "args": [
+                "--directory", "${workspaceFolder}/tools/jpick",
+                "run", "--locked", "--no-dev",
+                "playwright", "install", "chromium"
+            ],
+            "options": {
+                "env": { "PYTHONUTF8": "1", "PLAYWRIGHT_SKIP_BROWSER_GC": "1" }
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always", "focus": true, "panel": "dedicated", "clear": true
+            }
+        },
+        {
+            "label": "정올: 문제 추천",
+            "type": "process",
+            "command": "uv",
+            "args": [
+                "--directory", "${workspaceFolder}/tools/jpick",
+                "run", "--locked", "--no-dev",
+                "jpick", "recommend",
+                "--tier", "${input:jpickTier}",
+                "--rate", "${input:jpickRate}",
+                "--accepted", "${input:jpickAccepted}",
+                "--count", "${input:jpickCount}"
+            ],
+            "options": { "env": { "PYTHONUTF8": "1" } },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always", "focus": true, "panel": "dedicated", "clear": true
+            }
+        },
+        {
+            "label": "정올: 문제 목록",
+            "type": "process",
+            "command": "uv",
+            "args": [
+                "--directory", "${workspaceFolder}/tools/jpick",
+                "run", "--locked", "--no-dev",
+                "jpick", "list",
+                "--tier", "${input:jpickTier}",
+                "--rate", "${input:jpickRate}",
+                "--accepted", "${input:jpickAccepted}",
+                "--limit", "${input:jpickLimit}"
+            ],
+            "options": { "env": { "PYTHONUTF8": "1" } },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always", "focus": true, "panel": "dedicated", "clear": true
+            }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "jpickTier", "type": "promptString",
+            "description": "티어 범위: S5..G1, G5.., ..S1", "default": "S5..G1"
+        },
+        {
+            "id": "jpickRate", "type": "promptString",
+            "description": "정답률 범위: 40..80, 50.., ..80", "default": "50.."
+        },
+        {
+            "id": "jpickAccepted", "type": "promptString",
+            "description": "정답 제출 수 범위 (푼 사람 수 아님): 500.., 500..1000", "default": "500.."
+        },
+        {
+            "id": "jpickCount", "type": "promptString",
+            "description": "추천받을 문제 개수", "default": "3"
+        },
+        {
+            "id": "jpickLimit", "type": "promptString",
+            "description": "목록에 표시할 최대 문제 개수", "default": "20"
+        }
+    ]
+}
