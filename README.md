@@ -65,6 +65,8 @@ uv run --locked algo-pick open --help
 
 ## 다른 프로젝트·VS Code에서 사용
 
+다른 프로젝트의 `tools/algo-pick`에 소스를 두고 스크립트 하나로 GitHub 변경을 받아 업데이트하려면 [Git submodule 설치·업데이트 안내](docs/submodule.md)를 따르세요.
+
 이 저장소 루트에서 새 경로로 소스를 내보냅니다. 대상 경로는 사용할 프로젝트에 맞게 바꾸세요.
 
 ```sh
