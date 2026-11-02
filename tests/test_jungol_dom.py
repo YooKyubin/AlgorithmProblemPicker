@@ -689,7 +689,19 @@ def test_rated_site_results_preserved_across_listing(source, monkeypatch, bounds
     assert all(message.startswith('Collecting · 수집 ') for message in messages)
 
 
-@pytest.mark.parametrize('replacement', ['', '<img src="/solved/99.svg">', '<img src="/solved/9.svg"><img src="/solved/10.svg">'])
+@pytest.mark.parametrize('navigation', ['first', 'more'])
+def test_tier_url_identifies_badge_among_other_images(source, navigation):
+    body = html('site-listing.html').replace(
+        '<img src="/solved/8.svg">',
+        '<img src="blob:https://jungol.co.kr/decoration">'
+        '<img src="https://s.jungol.co.kr/solved/13.svg?dm=jungol.co.kr">')
+    problem_id = serve_statistics(source, body, navigation)
+    listing = source.collect(SearchCriteria(), None)
+    problem = next(problem for problem in listing.candidates if problem.id == problem_id)
+    assert problem.tier == Rated(13)
+
+
+@pytest.mark.parametrize('replacement', ['', '<img src="blob:https://jungol.co.kr/unknown">', '<img src="/solved/99.svg">', '<img src="/solved/9.svg"><img src="/solved/10.svg">'])
 def test_tier_schema_diagnostics(source, replacement):
     serve(source, html('tier-pagination.html').replace('<img src="/solved/9.svg">', replacement))
     with pytest.raises(SourceSchemaError, match='1000.*티어'):

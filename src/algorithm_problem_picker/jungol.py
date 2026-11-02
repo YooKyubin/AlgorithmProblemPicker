@@ -33,7 +33,8 @@ _SNAPSHOT = r"""() => {
                 links: [...(cell?.querySelectorAll('a') || [])].map(a => ({
                     href: a.getAttribute('href'),
                     titles: [...a.querySelectorAll('.title')].map(e => e.innerText.trim()),
-                    tiers: [...a.querySelectorAll('img')].map(e => e.getAttribute('src')),
+                    tiers: [...a.querySelectorAll('img')].map(e => e.getAttribute('src'))
+                        .filter(src => /\/solved\/[0-9]+\.svg(?:\?|$)/.test(src || '')),
                     missingTier: a.querySelectorAll('[title="난이도 미확인"]').length,
                     unrated: a.matches('.pl-row-link') && !a.querySelector('.pl-card-tier') &&
                              !a.querySelector('img') && !a.querySelector('[title="난이도 미확인"]') && !!a.querySelector('.title')
