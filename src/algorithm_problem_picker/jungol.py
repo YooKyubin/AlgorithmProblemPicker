@@ -16,10 +16,50 @@ from .ports import SourceAccessError, SourceCompletenessError, SourceSchemaError
 _ORIGIN = "https://jungol.co.kr"
 _EMPTY = {"-", "—", "미확인", "미제공"}
 
+# Preserve public image URLs before the site's image component replaces them with blob URLs.
+# The observer is installed before page scripts and lives only as long as its document.
+_TIER_SOURCES = r"""(() => {
+    const attribute = 'data-algo-pick-tier-source';
+    const remember = (image, src, container) => {
+        const targets = [image];
+        const badge = image.closest('.pl-card-tier') || container;
+        if (badge) targets.push(badge);
+        for (const target of targets) {
+            if (/\/solved\/[0-9]+\.svg(?:\?|$)/.test(src || '')) target.setAttribute(attribute, src);
+            else if (!src?.startsWith('blob:')) target.removeAttribute(attribute);
+        }
+    };
+    const inspect = (node, container) => {
+        if (!(node instanceof Element)) return;
+        if (node.matches('img')) remember(node, node.getAttribute('src'), container);
+        for (const image of node.querySelectorAll('img')) remember(image, image.getAttribute('src'), container);
+    };
+    new MutationObserver(mutations => {
+        for (const mutation of mutations) {
+            if (mutation.type === 'attributes' && mutation.target.matches('img')) {
+                // oldValue also captures a URL replaced in the same JavaScript task.
+                remember(mutation.target, mutation.oldValue);
+                remember(mutation.target, mutation.target.getAttribute('src'));
+            } else if (mutation.type === 'childList') {
+                const container = mutation.target instanceof Element ? mutation.target.closest('.pl-card-tier') : null;
+                // The component can replace the img node while keeping its tier container.
+                for (const node of mutation.removedNodes) inspect(node, container);
+                for (const node of mutation.addedNodes) inspect(node, container);
+            }
+        }
+    }).observe(document, {subtree:true, childList:true, attributes:true,
+                           attributeFilter:['src'], attributeOldValue:true});
+})()"""
+
 # Only DOM is inspected, never application globals or serialized state.
 _SNAPSHOT = r"""() => {
     const visible = e => !!e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
     const texts = selector => [...document.querySelectorAll(selector)].filter(visible).map(e => e.innerText.trim());
+    const tierSource = image => {
+        const src = image.getAttribute('src');
+        return src?.startsWith('blob:') ? image.getAttribute('data-algo-pick-tier-source') ||
+            image.closest('.pl-card-tier')?.getAttribute('data-algo-pick-tier-source') : src;
+    };
     const text = document.querySelector('article')?.innerText || document.body.innerText;
     const tables = [...document.querySelectorAll('article table')].filter(t =>
         [...t.querySelectorAll('th')].some(e => e.innerText.trim() === '문제') &&
@@ -33,7 +73,7 @@ _SNAPSHOT = r"""() => {
                 links: [...(cell?.querySelectorAll('a') || [])].map(a => ({
                     href: a.getAttribute('href'),
                     titles: [...a.querySelectorAll('.title')].map(e => e.innerText.trim()),
-                    tiers: [...a.querySelectorAll('img')].map(e => e.getAttribute('src'))
+                    tiers: [...a.querySelectorAll('img')].map(tierSource)
                         .filter(src => /\/solved\/[0-9]+\.svg(?:\?|$)/.test(src || '')),
                     missingTier: a.querySelectorAll('[title="난이도 미확인"]').length,
                     unrated: a.matches('.pl-row-link') && !a.querySelector('.pl-card-tier') &&
@@ -121,6 +161,7 @@ class JungolSource:
             self._context = self._browser.new_context(locale="ko-KR", viewport={"width":1280, "height":900})
             self._context.set_default_navigation_timeout(30_000)
             self._context.set_default_timeout(self._dom_timeout)
+            self._context.add_init_script(_TIER_SOURCES)
             self._context.on("request", self._request_started)
             self._context.on("requestfinished", self._request_finished)
             self._context.on("requestfailed", self._request_failed)

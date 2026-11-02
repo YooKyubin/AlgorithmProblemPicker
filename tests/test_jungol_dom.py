@@ -701,6 +701,55 @@ def test_tier_url_identifies_badge_among_other_images(source, navigation):
     assert problem.tier == Rated(13)
 
 
+@pytest.mark.parametrize('navigation', ['first', 'more'])
+@pytest.mark.parametrize('conversion', ['src', 'element'])
+def test_tier_sources_survive_blob_conversion(source, navigation, conversion):
+    source._context.add_init_script('''document.addEventListener('DOMContentLoaded', () => {
+        for (const image of document.querySelectorAll('td[data-col="문제"] img')) {
+            if (image.closest('.pl-card-tier')) continue;
+            const badge = document.createElement('span');
+            badge.className = 'pl-card-tier';
+            image.replaceWith(badge);
+            badge.append(image);
+        }
+        const convert = () => {
+            for (const image of document.querySelectorAll('td[data-col="문제"] img')) {
+                const blob = URL.createObjectURL(new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'],
+                                                         {type:'image/svg+xml'}));
+                CONVERSION
+            }
+        };
+        convert();
+        document.addEventListener('click', event => { if (event.target.id === 'more') convert(); });
+    });'''.replace('CONVERSION', 'image.src = blob;' if conversion == 'src' else
+                   'image.replaceWith(Object.assign(document.createElement("img"), {src:blob}));'))
+    body = html('site-listing.html')
+    for tier in (8, 10, 13):
+        image = f'<img src="/solved/{tier}.svg">'
+        body = body.replace(image, '<span class="pl-card-tier">' + image + '</span>')
+    serve_statistics(source, body, navigation)
+    listing = source.collect(SearchCriteria(), None)
+    expected = [Rated(8), Rated(10), Rated(13)] * (1 if navigation == 'first' else 2)
+    assert [problem.tier for problem in listing.candidates] == expected
+    assert source._list_page.locator('td[data-col="문제"] img[src^="blob:"]').count() == len(expected)
+
+
+@pytest.mark.parametrize('replacement', ['/solved/13.svg?dm=jungol.co.kr', '/solved/99.svg', '/other.png'])
+def test_blob_conversion_uses_latest_source_without_stale_tier(source, replacement):
+    body = html('site-listing.html') + '''<script>
+        const image = document.querySelector('img');
+        image.src = SOURCE;
+        image.src = URL.createObjectURL(new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'],
+                                                {type:'image/svg+xml'}));
+    </script>'''.replace('SOURCE', json.dumps(replacement))
+    serve(source, body)
+    if replacement.startswith('/solved/13.svg'):
+        assert source.collect(SearchCriteria(), None).candidates[0].tier == Rated(13)
+    else:
+        with pytest.raises(SourceSchemaError, match='1000.*티어'):
+            source.collect(SearchCriteria(), None)
+
+
 @pytest.mark.parametrize('replacement', ['', '<img src="blob:https://jungol.co.kr/unknown">', '<img src="/solved/99.svg">', '<img src="/solved/9.svg"><img src="/solved/10.svg">'])
 def test_tier_schema_diagnostics(source, replacement):
     serve(source, html('tier-pagination.html').replace('<img src="/solved/9.svg">', replacement))
